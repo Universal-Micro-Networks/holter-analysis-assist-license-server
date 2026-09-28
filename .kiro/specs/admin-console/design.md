@@ -37,7 +37,7 @@
 
 ### Allowed Dependencies
 - 既存の `domain`・`repository`・`services`（`LicenseService`・`UsageService`・上限値検証・期間計算）。
-- 既存の `http.rate_limit`（レート制限ガード）と `http.access_log`（アクセスログ）。
+- 既存の `http.rate_limit`（レート制限ガード）、`http.access_log`（アクセスログ）、`http.responses` の `status_for`（`ErrorCode` → HTTP ステータス）。
 - Cloudflare Access（JWT と公開鍵エンドポイント）、D1、Workers Static Assets。
 - 追加の Python パッケージは使わない（Flask 同梱の Jinja2・itsdangerous・MarkupSafe のみ）。
 
@@ -86,9 +86,9 @@ graph TB
 **Architecture Integration**:
 - Selected pattern: 既存 Worker 内への Blueprint 追加（サーバー側描画）。サービス層を共有し、画面固有の関心（認証・セッション・CSRF・フォーム・表示）は `console` パッケージに閉じ込める。
 - Domain/feature boundaries: 画面の変更操作はすべて `ConsoleService` を通し、データ更新と操作記録を 1 回の D1 `batch()` で原子的に書く。既存の `LicenseService` の API 用の変更メソッドは操作記録を書かない。
-- Existing patterns preserved: SQL の集約と共有、リクエスト単位の依存生成、Protocol によるリポジトリ抽象、固定文言のエラー、キーのフィンガープリントのみのログ。
+- Existing patterns preserved: SQL の集約と共有、リクエスト単位の依存生成、Protocol によるリポジトリ抽象、固定文言のエラー、ライセンスキーを出さないログ（画面のログにはフィンガープリントも出さない）。
 - New components rationale: Access JWT の検証（外部連携）、画面セッション（状態）、操作記録（新しいデータ）はいずれも新しい境界のため独立させる。
-- Dependency direction: `domain` → `config` → `repository` → `services` → `http` / `console` → `wiring` → `app` → `worker.py`。`http` と `console` は互いに import しない（`console` が使うレート制限・アクセスログ関数は例外として `http.rate_limit`・`http.access_log` のみ import 可）。`wiring`（本番の依存生成）と `app`（アプリ組み立て）だけが両方を知る。
+- Dependency direction: `domain` → `config` → `repository` → `services` → `http` / `console` → `wiring` → `app` → `worker.py`。`http` と `console` は互いに import しない（`console` が使うレート制限・アクセスログ・ステータス変換は例外として `http.rate_limit`・`http.access_log`・`http.responses` のみ import 可）。`wiring`（本番の依存生成）と `app`（アプリ組み立て）だけが両方を知る。
 
 ### Technology Stack
 
@@ -107,15 +107,16 @@ graph TB
 migrations/
 └── 0002_admin_console.sql             # memo・public_id 列、console_audit_logs テーブル、索引
 public/
+├── _headers                           # 静的ファイル（/console/assets/*）のセキュリティヘッダー
 └── console/assets/
     ├── vendor/bootstrap/              # bootstrap.min.css、bootstrap.bundle.min.js、LICENSE（MIT）
     ├── console.css                    # Bootstrap への小さな追加スタイル
-    ├── console.js                     # クリップボードコピー、二重クリック防止（補助）、検索フォームの状態選択での送信
-    └── favicon.svg
+    ├── console.js                     # クリップボードコピー、二重クリック防止（補助）、検索フォームの状態選択での送信、戻る操作後の送信済み解除
+    └── favicon.svg                    # ファビコン兼ナビゲーションバーのロゴ
 src/license_server/
 ├── domain/
-│   ├── types.py                       # License に memo・public_id を追加。LicenseListItem, LicenseSearch, AuditEntry, AuditAction, Operator, AuditContext
-│   └── period.py                      # JST 表示用の変換、JST 日付範囲 → UTC 半開区間
+│   ├── types.py                       # License に memo・public_id を追加。LicenseListItem, LicenseSearch, LicenseSort, SortOrder, AuditEntry, AuditAction, AuditValues, Operator, AuditContext, UNLIMITED
+│   └── period.py                      # JST 表示用の変換、JST 日付範囲 → UTC 半開区間（Period）、当月の初日・末日
 ├── repository/
 │   ├── base.py                        # ConsoleRepository Protocol、DuplicateSubmission
 │   ├── sql.py                         # 一覧・検索、公開 ID での取得、操作記録付き更新の SQL
@@ -138,10 +139,11 @@ src/license_server/
 tests/
 ├── fakes/sqlite_repository.py         # ConsoleRepository を追加実装
 ├── fakes/access.py                    # テスト用 RSA 鍵ペアと JWT 生成、偽の公開鍵取得
-├── unit/console/                      # access, session, security, forms, messages
+├── unit/console/                      # test_access, test_session, test_security, test_forms, test_messages
 ├── unit/services/test_console_service.py
-├── contract/                          # ConsoleRepository の契約テスト
-└── integration/console/               # Flask テストクライアントによる画面操作のテスト
+├── contract/test_console_repository_contract.py   # ConsoleRepository の契約テスト
+└── integration/console/               # conftest（偽の Access 鍵とテスト用ブラウザ）、test_console_common（認証・ヘッダー・エラー）、
+                                       # test_console_pages（各画面）、test_console_scenarios（通し操作と API との整合）、test_console_logging
 scripts/
 ├── console_http.py                    # 開発サーバー用の最小ブラウザ（__Host- Cookie を手動で扱う）
 ├── console_smoke.py                   # 開発サーバーで画面の主要操作を確認
@@ -155,7 +157,7 @@ scripts/
 - `src/license_server/domain/types.py` — `License` に `memo: str = ""`、`public_id: str | None = None` を末尾に追加する（既存の生成箇所に影響させない）。
 - `src/license_server/repository/sql.py` — ライセンスの SELECT 列に `memo`・`public_id` を追加し、`INSERT_LICENSE` で `public_id` を SQL 側で生成する（API で発行したライセンスにも公開 ID を付けるため）。
 - `src/license_server/http/dependencies.py` — `workers_dependencies` を `wiring.py` へ移す（`http` から `console` を参照しないため）。`Dependencies`・`current()`・ガードはそのまま残す。
-- `src/license_server/config.py` — `ConsoleSettings` と `console_settings_from_environ` を追加する（空文字・文字列以外は未設定扱い、チーム ドメインは `https://host` に正規化）。
+- `src/license_server/config.py` — `ConsoleSettings` と `console_settings_from_environ` を追加する（空文字・文字列以外は未設定扱い、チーム ドメインは `https://host` に正規化。ホスト名として不正な値や `https` 以外のスキームも未設定扱い）。
 - `src/license_server/http/access_log.py` — `remember_operator(email)` を追加し、設定された要求だけログに `operator` を含める。
 - `src/license_server/app.py` — `create_app(dependencies, console_dependencies=None)` に拡張し、console Blueprint を登録する。`/console` 配下のエラーは HTML で返す。
 - `src/worker.py` — `wiring` のファクトリを使う。
@@ -331,9 +333,23 @@ class LicenseListItem:
     license: License
     used_this_month: int
 
+class LicenseSort(StrEnum):
+    CREATED_AT = "created_at"
+    MONTHLY_LIMIT = "monthly_limit"
+    USED = "used"
+
+class SortOrder(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+AuditValues = dict[str, str | int]  # AuditEntry の before・after の型
+UNLIMITED = 0                       # 月間上限 0 は上限なし（画面から発行するライセンスの既定）
+
 def format_jst(utc_text: str) -> str: ...                       # "2026-09-28 13:45:00"（日本時間）
-def jst_date_range(start: date, end: date) -> tuple[str, str]: ...  # [start 00:00 JST, end 翌日 00:00 JST) を UTC 文字列で
+def jst_date_range(start: date, end: date) -> Period: ...       # [start 00:00 JST, end 翌日 00:00 JST) の UTC 半開区間
+def jst_month_bounds(now_utc: datetime) -> tuple[date, date]: ...  # 当月（JST）の初日と末日
 ```
+- `LicenseSearch` には `sort: LicenseSort = CREATED_AT` と `order: SortOrder = DESC` もある。
 - `License` には `memo: str = ""` と `public_id: str | None = None` を追加する。`public_id` は `lic_` ＋ 16 桁の小文字 16 進数で、画面の URL でライセンスを指す唯一の識別子とする。
 
 ### Console
@@ -347,10 +363,10 @@ def jst_date_range(start: date, end: date) -> tuple[str, str]: ...  # [start 00:
 
 **Responsibilities & Constraints**
 - ヘッダーは `alg: RS256` のみ受け付ける（`none`・HS 系は拒否）。`kid` に一致する公開鍵で署名を検証する。
-- クレーム検証: `iss` がチーム ドメインと一致、`aud` に `ACCESS_AUD` を含む、`exp` が現在より後、`nbf`（あれば）が現在以前（許容誤差 60 秒）、`type` が `app`、`email` と `sub` が空でない。
+- クレーム検証: `iss` がチーム ドメインと一致、`aud`（文字列または配列）に `ACCESS_AUD` を含む、`exp` が現在より後、`nbf`（あれば）が現在以前（`exp`・`nbf` とも許容誤差 60 秒。数値でなければ拒否）、`type` が `app`、`email` と `sub` が空でない。
 - 署名検証は RFC 8017 §8.2.2 に従い、署名値から復元した値と、期待する EMSA-PKCS1-v1_5（SHA-256 の DigestInfo 付き）の符号化を**全体一致**で比較する（ASN.1 の解析はしない）。公開鍵は JWK の `n`・`e` を整数として使う。
 - 公開鍵は `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs` から取得し、Worker インスタンス内で 1 時間キャッシュする。未知の `kid` を受け取ったときは 1 回だけ再取得する。
-- JWT・Cookie の値はログに出さない。
+- JWT・Cookie の値はログに出さない。拒否理由の分類は `malformed`・`bad_algorithm`・`unknown_key`・`bad_signature`・`bad_issuer`・`bad_audience`・`expired`・`not_yet_valid`・`bad_type`・`missing_identity`。
 
 **Dependencies**
 - Outbound: `CertsFetcher`（公開鍵の取得。本番は `js.fetch`＋`run_sync`）(P0)
@@ -389,8 +405,10 @@ class AccessUnavailable(Exception): ...                        # 公開鍵を取
 **Responsibilities & Constraints**
 - 署名付き Cookie（itsdangerous の `URLSafeSerializer`、秘密鍵 `CONSOLE_SESSION_SECRET`）に、`operator_subject`・`last_seen`（UTC エポック秒）・`csrf_token`・フラッシュ・一覧の検索条件を保存する。Workers では秘密鍵を要求ごとにしか読めないため、アプリ生成時に `secret_key` を固定する Flask 標準のセッションは使わず、要求の開始時に読み込み、応答時に保存する。署名のみで暗号化はしないため、検索条件以外にライセンスキーを保存しない（検索条件も運営者自身が入力した値に限る）。
 - 5xx の応答ではセッションを保存しない（障害時にフラッシュや `last_seen` を進めない）。
-- Cookie 属性: 名前 `__Host-console`、`Secure`、`HttpOnly`、`SameSite=Lax`、`Path=/`。ループバックのホストへの `http` 接続（ローカル開発）に限り、名前 `console-local`・`Secure` なしにする。Safari（WebKit）は `http://localhost` で `Secure` Cookie を保存せず、`__Host-` の名前は `Secure` が必須のため。
+- 署名は有効期限なし（`URLSafeSerializer`、salt `license-server.console-session`）で、失効は `last_seen` で判定する。署名が不正な Cookie は空のセッションとして扱う。保存するキーは `operator_subject`・`last_seen`・`csrf_token`・`flashes`・`search`（検索語 `q` と状態 `status`）。
+- Cookie 属性: 名前 `__Host-console`、`Secure`、`HttpOnly`、`SameSite=Lax`、`Path=/`。`Max-Age`・`Expires` は付けない（ブラウザを閉じると消えるセッション Cookie）。ループバックのホストへの `http` 接続（ローカル開発）に限り、名前 `console-local`・`Secure` なしにする。Safari（WebKit）は `http://localhost` で `Secure` Cookie を保存せず、`__Host-` の名前は `Secure` が必須のため。
 - `touch(operator, now)`: セッションがない、または `operator_subject` が異なる場合は新しいセッションを作り（CSRF トークンを再生成）、`True` を返す。呼び出し側のガードが `sign_in` を操作記録に残す。`now - last_seen` が 8 時間を超える場合は `SessionExpired` を送出する（8 時間ちょうどは有効）。それ以外は `last_seen` を更新する。
+- 失効時はセッションを消去し、ログアウト先（Access のログアウト、ローカル開発用運営者では `/console/signed-out`）へ 302 で送る。
 - サインアウトはセッションを消去し、Access のログアウトへ送る。
 
 **Contracts**: Service [x] / State [x]
@@ -426,9 +444,14 @@ class ConsoleSession:
 | Requirements | 1.1, 7.2, 7.3, 7.5, 7.6, 8.4 |
 
 **Responsibilities & Constraints**
-- `before_request`（console Blueprint のみ、`routes.py`）で、レート制限 → 設定の確認 → 運営者の識別（Access またはローカル開発用）→ セッションの `touch`（新規なら `sign_in` を記録）→ POST なら CSRF・送信元の検証、の順に適用する。`/console/signed-out` は認証なしで表示する。
-- セキュリティヘッダーは app 全体の `after_request`（`errors.py`）で `/console` 配下のすべての応答に付ける。Blueprint に一致しない `/console/...` の 404 や、ガードで止めた応答も対象になる。
-- 変更操作（POST）では、フォームの `csrf_token` とセッションの値を定数時間比較し、`Origin` ヘッダー（なければ `Referer`）が自サイトと一致することを確認する。不一致は 403 で拒否し、操作を実行しない。
+- `before_request`（console Blueprint のみ、`routes.py`）で、レート制限 → 設定の確認 → 運営者の識別（Access またはローカル開発用）→ セッションの `touch`（新規なら `sign_in` を記録）→ POST なら CSRF・送信元の検証、の順に適用する。`/console/signed-out` は認証なし・レート制限なしで表示する。
+  - レート制限は API と同じ `RATE_LIMITER` を送信元 IP（`CF-Connecting-IP`、なければ `"unknown"`）で使うため、API と画面で 1 つの枠を共有する。
+  - `sign_in` の記録は CSRF の検証より前に行う（新しいセッションで最初に届いた要求が拒否される POST でも、サインイン自体は記録される）。
+  - ローカル開発用運営者は、ループバック以外のホストへの要求では使わず 503（未設定）とする。
+  - Blueprint のルートに一致しない `/console/...` はガードを通らずに 404 の HTML を返す（内容を含まないため認証は不要）。
+  - ファクトリ（`console_dependencies`）が渡されていないアプリでは、画面は 503（一時的な障害）になる。
+- セキュリティヘッダーは app 全体の `after_request`（`errors.py`）で、Worker が返す `/console` 配下のすべての応答に付ける。Blueprint に一致しない `/console/...` の 404 や、ガードで止めた応答も対象になる。`public/console/assets/` の静的ファイルは Workers Static Assets が Worker より前に返すため、`public/_headers` で `/console/assets/*` に CSP（`default-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'`）・`X-Frame-Options`・`X-Content-Type-Options`・`Referrer-Policy`・HSTS を付ける（`Cache-Control` は Static Assets の既定のまま。キーを含まないため）。`_headers` 自体は配信されない。
+- 変更操作（POST）では、フォームの `csrf_token` とセッションの値を定数時間比較し、`Origin` ヘッダー（なければ `Referer`）が自サイトと一致することを確認する。不一致は 403 で拒否し、操作を実行しない。`Origin: null` も不一致として扱う。
 - 応答ヘッダー: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`（`img-src` の `data:` は Bootstrap の CSS に埋め込まれた SVG アイコン用。画像としての SVG はスクリプトを実行しない）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`（`no-referrer` にするとブラウザがフォーム送信時に `Origin: null` を送り、送信元の検証で全操作が拒否されるため）、`Cache-Control: no-store`（キーを含むページをキャッシュさせない）、`Strict-Transport-Security: max-age=31536000`（7.2。ループバックの開発環境では付けない）。
 - テンプレートは Jinja2 の自動エスケープを有効にし、`|safe` を使わない。インライン JavaScript・インライン style は使わない。
 
@@ -463,7 +486,7 @@ ConsoleDependencyFactory = Callable[[], ConsoleDependencies]
 ```
 - `wiring.workers_dependencies()`（既存を移設）と `wiring.workers_console_dependencies()` が `config.bindings_from_environ` の値から生成する。
 - 設定値: `ACCESS_TEAM_DOMAIN`・`ACCESS_AUD`（`vars`）、`CONSOLE_SESSION_SECRET`（Secret）、`CONSOLE_DEV_OPERATOR_EMAIL`（ローカルの `.dev.vars` のみ）。
-- `verifier` も `dev_operator` もない場合、画面は常に 503「管理画面が設定されていません」を返す（フェイルクローズ）。`CONSOLE_SESSION_SECRET` がない場合も同様。`ACCESS_TEAM_DOMAIN`・`ACCESS_AUD` の片方だけが設定されている場合は、検証器も開発用運営者も作らず 503 になる。
+- `verifier` も `dev_operator` もない場合、画面は常に 503「管理画面が設定されていません」を返す（フェイルクローズ）。`CONSOLE_SESSION_SECRET` がない場合も同様。`ACCESS_TEAM_DOMAIN`・`ACCESS_AUD` の片方だけが設定されている場合は、検証器も開発用運営者も作らず 503 になる。`ACCESS_TEAM_DOMAIN` が不正な値（ホスト名として不正、`https` 以外のスキーム）の場合は未設定と同じ扱いになる。
 
 ### Services
 
@@ -505,11 +528,16 @@ class LicenseDetail:
 
 def validate_memo(value: object) -> str: ...                     # 不正は ServiceError(INVALID_REQUEST)
 
+USAGE_PAGE_SIZE = 100
+AUDIT_DISPLAY_LIMIT = 50
+
 class ConsoleService:
-    def __init__(self, repo: ConsoleRepository, licenses: LicenseService, usage: UsageService,
+    def __init__(self, repo: ConsoleRepository, usage: UsageService,
                  clock: Callable[[], datetime],
                  key_generator: Callable[[], str] = generate_license_key) -> None: ...
+    def context(self, operator: Operator, request_id: str, source_ip: str | None) -> AuditContext: ...  # 現在時刻を入れる
     def search(self, criteria: LicenseSearch) -> LicensePage: ...
+    def license(self, public_id: str) -> License: ...          # 確認画面・履歴画面の表示用
     def detail(self, public_id: str, month: tuple[int, int] | None) -> LicenseDetail: ...
     def issue(self, monthly_limit: object, memo: object, ctx: AuditContext) -> License: ...
     def update_limit(self, public_id: str, monthly_limit: object, ctx: AuditContext) -> License: ...
@@ -522,7 +550,8 @@ class ConsoleService:
     def license_for_request(self, request_id: str) -> License | None: ...  # 二重送信時の遷移先
 ```
 - 存在しない `public_id` は `ServiceError(LICENSE_NOT_FOUND)`。
-- `issue` はキー重複時に最大 3 回再生成する（既存の `LicenseService.issue` と同じ規則）。
+- `issue` はキー重複時に最大 3 回再生成する（既存の `LicenseService.issue` と同じ規則）。3 回とも重複した場合は `RepositoryUnavailable`（503）。発行の操作記録は `before` を NULL、`after` を `{"monthly_limit", "memo"}` とする。
+- メモと上限の変更は、値が変わらない場合も操作記録を残す（停止・再開と異なり、変化の有無を判定しない）。
 - 二重送信（`request_id` の再利用）は `DuplicateSubmission` をそのまま送出し、画面側で元の結果へ遷移させる。
 - 停止中への `suspend`、有効への `activate` は状態を変えずに成功とし、操作記録も残さない（記録は実際に変化した操作だけ）。リポジトリは「ライセンスなし」と「変化なし」をどちらも `None` で返すため、サービスは `None` のとき再取得して区別する。
 
@@ -577,12 +606,12 @@ class ConsoleRepository(Protocol):
 
 | Method | Path | 入力 | 応答 | 主なエラー |
 |--------|------|------|------|-----------|
-| GET | /console | — | 302 → /console/licenses | — |
+| GET | /console, /console/ | — | 302 → /console/licenses | — |
 | GET | /console/licenses | `page`, `sort`, `order` | 一覧ページ（検索条件はセッションから） | — |
 | POST | /console/licenses/search | `q`, `status`, `sort`, `order`, `csrf_token` | 302 → /console/licenses（並び順を引き継ぐ） | 400（検索条件不正で再表示）, 403 |
 | GET | /console/licenses/new | — | 発行フォーム | — |
 | POST | /console/licenses | `monthly_limit`, `memo`, `csrf_token`, `request_id` | 302 → 詳細 | 400（項目別エラーで再表示）, 403 |
-| GET | /console/licenses/{public_id} | `month`（`YYYY-MM`、任意） | 詳細ページ | 404 |
+| GET | /console/licenses/{public_id} | `month`（`YYYY-MM`、任意。年は 2000 以上） | 詳細ページ | 400（月の形式不正。当月で再表示）, 404 |
 | POST | /console/licenses/{public_id}/limit | `monthly_limit`, `confirmed`, `csrf_token`, `request_id` | 302 → 詳細、または確認ページ | 400, 403, 404 |
 | POST | /console/licenses/{public_id}/suspend | `confirmed`, `csrf_token`, `request_id` | 302 → 詳細、または確認ページ | 403, 404 |
 | POST | /console/licenses/{public_id}/activate | `confirmed`, `csrf_token`, `request_id` | 302 → 詳細、または確認ページ | 403, 404 |
@@ -591,12 +620,16 @@ class ConsoleRepository(Protocol):
 | POST | /console/sign-out | `csrf_token` | 302 → `/cdn-cgi/access/logout`（ローカル開発用運営者は `/console/signed-out`） | 403 |
 | GET | /console/signed-out | — | サインアウト済みの案内（認証不要） | — |
 
-- 共通: 認証失敗 403（「サインインが必要です」）、要求制限 429、一時的障害 503、未設定 503。すべて HTML。
+- 共通: 認証失敗 403（「サインインが必要です」）、要求制限 429、一時的障害 503、未設定 503、メソッド不一致 405。すべて HTML。
+- POST の `request_id` は `[A-Za-z0-9-]{8,64}` に一致しなければ 400（入力誤りのエラーページ）。フォームには UUID を埋め込む。サインインの記録は `sign-in-<uuid4 の16進数>` を使う。
+- `page` は 1〜10000 の整数以外なら 1、`after_id` は正の整数以外なら無視する（どちらもエラーにしない）。
+- `from`・`to` はそれぞれ独立に既定値（当月の初日・末日）を持つ。形式不正・開始 > 終了は 400 で、履歴を表示せずに理由を示す。
+- 上限の変更フォームは画面にないため、`/limit` へ直接送られた入力誤りは詳細画面の共通の警告（「入力内容に誤りがあります」）だけが表示される。確認画面は新しい上限が当月の利用回数より小さい場合にだけ出す。
 - `from`・`to` は日本時間の日付で、両端を含む。内部では `[from 00:00 JST, to の翌日 00:00 JST)` の UTC 半開区間に変換する。未指定時は当月。
 - ライセンスキーは URL に含めない。検索語にはキー（またはその一部）が入り得るため、検索条件は POST で受け取ってセッションに保存し、一覧の URL にはページ番号と並び順（`sort`・`order`。秘密を含まない）だけを載せる（Post/Redirect/Get）。検索条件を空で送ると絞り込みを解除する。
 - `sort`・`order` の未知の値は既定（`created_at`・`desc`）として扱い、エラーにしない。既定の並び順のときは URL に載せない。
 - ページャーは「全 N 件中 a〜b 件」と、前へ・次へ、先頭・末尾・現在の前後 2 ページの番号を表示し、離れた番号は「…」で省略する（省略が 1 ページだけならその番号を表示する）。ページが 1 つのときは番号を出さない。
-- 並べ替えできる列の見出しはリンクで、現在の列には `aria-sort` と ▲・▼ を付け、同じ見出しを選ぶと向きを反転する。別の列を選んだときは降順から始める。月間上限の列は表示しないため、見出しは当月の利用回数と発行日時だけ（`sort=monthly_limit` はリポジトリに残るが画面からはリンクしない）。
+- 並べ替えできる列の見出しはリンクで、現在の列には `aria-sort` と ▲・▼、それ以外の列には ↕ を付け、同じ見出しを選ぶと向きを反転する。別の列を選んだときは降順から始める。月間上限の列は表示しないため、見出しは当月の利用回数と発行日時だけ（`sort=monthly_limit` はリポジトリに残るが画面からはリンクしない）。
 - 検索フォームに送信ボタンは置かない。テキスト入力欄が 1 つだけのフォームはブラウザの暗黙の送信で Enter により送信される。状態の選択は `console.js` が `change` で `requestSubmit()` を呼んで送信する（`submit` イベントを経由するので二重送信防止も効く）。戻るボタンで復元されたページでも再送信できるよう、`pageshow`（`persisted`）で送信済みの印を外す。JavaScript が無効な場合も Enter での検索はできる。
 - 月間上限は画面では扱わない。発行フォームに入力欄はなく、`parse_issue` は `monthly_limit` が送られなければ `UNLIMITED`（0）とする（送られた場合は従来どおり検証する）。一覧・詳細・操作記録から月間上限と残り回数を除き、操作記録の値の表示（`audit_values`）では `monthly_limit` を出さない。上限変更の経路（`POST /console/licenses/{public_id}/limit`）と確認画面はサーバー側に残し、画面からはリンクしない。上限の設定・変更が必要な場合は管理 API を使う。
 
@@ -604,6 +637,8 @@ class ConsoleRepository(Protocol):
 - Integration: `/console` 配下のエラー（`ServiceError`・`HTTPException`・`RepositoryUnavailable`・想定外例外・未定義パス）は、アプリ共通のエラー処理で要求パスが `/console` で始まるかを判定し、HTML のエラーページで返す。`/v1` 配下は従来どおり JSON（8.6）。
 - Validation: 検証エラーはフォームを入力値付きで再表示し、項目ごとのメッセージを表示する（ステータス 400）。
 - Risks: テンプレートのバンドルはタスク 1.1 で確認済み（Open Questions を参照）。
+- Templates: すべてのページに `<meta name="robots" content="noindex, nofollow">` を付ける。本文の幅は `max-width: 1080px`（狭い画面では画面幅に合わせる）。詳細と利用履歴にはパンくず（ライセンス一覧 › ライセンシー › 利用履歴）を置く。ハンバーガーメニュー（発行・サインアウト）と運営者名はサインイン済みのときだけ表示する。
+- `sign_in` の操作記録は保存するが、画面には表示しない（詳細画面の操作記録はライセンスごとの記録だけ）。
 
 ## Data Models
 
@@ -672,13 +707,15 @@ CREATE INDEX idx_console_audit_logs_license ON console_audit_logs (license_key, 
 | 入力誤り | 400 | 項目ごとのメッセージ |
 | ライセンスなし | 404 | ライセンスが見つかりません |
 | 二重送信 | 302 | 元の操作結果へ遷移し「この操作はすでに実行されています」と表示 |
-| 要求制限 | 429 | しばらく待ってから再度操作してください |
-| D1・公開鍵取得の失敗、想定外例外 | 503 | 一時的な障害です。操作は完了していません |
+| 要求制限 | 429 | 要求が多すぎます。しばらく待ってから再度操作してください |
+| D1・公開鍵取得の失敗、想定外例外 | 503 | 一時的な障害が発生しました。操作は完了していません。しばらくしてから再度お試しください |
+| 未定義のページ | 404 | ページが見つかりません |
 | 管理画面の未設定 | 503 | 管理画面が設定されていません |
 
 ### Monitoring
-- 既存のアクセスログ（JSON 1 行）を `/console` にも適用する。`route` は URL ルールのテンプレート（`/console/licenses/<public_id>`）で、公開 ID やキーは出さない。キーを扱う操作ではフィンガープリントを記録する。
-- 追加フィールド `operator`（運営者のメールアドレス）を `/console` のログに含める。
+- 既存のアクセスログ（JSON 1 行）を `/console` にも適用する。`route` は URL ルールのテンプレート（`/console/licenses/<public_id>`）で、公開 ID やキーは出さない。画面のログには `key_fingerprint` を出さない（常に null）。`error_code` は HTML の応答では null。
+- 追加フィールド `operator`（運営者のメールアドレス）を `/console` のログに含める。運営者を識別できた後の要求に限る（認証前に止めた要求・`/console/signed-out` には付かない）。
+- アプリのログ: CSRF・送信元の不一致は `console request rejected: <理由>`（警告）、D1・公開鍵取得の失敗は `console temporary failure: <例外の型>`、公開鍵の取得失敗は `Access certs unavailable: <例外の型>`、想定外の例外は `unexpected console error`（スタックトレース付き）。
 - JWT 検証失敗は理由の分類（`expired`・`bad_signature`・`bad_audience` など）だけを警告ログに出す（`Access token rejected: <reason>`）。
 - `wrangler dev` がローカルで出す要求行（`[wrangler:info] GET /console/licenses/lic_... 200 OK`）には公開 ID を含むパスが出る。これは開発サーバー自身のログで、アプリのアクセスログには出ない。公開 ID は秘密ではない。
 
@@ -703,9 +740,9 @@ CREATE INDEX idx_console_audit_logs_license ON console_audit_logs (license_key, 
   - `/v1/*` の応答が画面の追加前と同一であること（既存テストの維持）
 - **Runtime Tests**（docker compose の開発サーバー）
   - テンプレートと静的ファイルがバンドルされ、画面が表示されること（最初のタスク）
-  - `scripts/console_smoke.py`: ローカル開発用運営者で発行 → 変更 → 停止 → 再開 → メモ変更 → 操作記録 → 利用履歴 → 検索 → サインアウトを確認
-  - `scripts/console_browser_check.py`: Chrome と WebKit で、表示される見出しがなく発行リンクがメニューを開くまで見えないことを確かめ、メニューから発行 → 上限変更 → 停止（確認）→ 検索 → サインアウトを操作し、POST が拒否されないこととブラウザのコンソールにエラーがないこと
-  - `scripts/console_runtime_check.py`: すべての画面応答のセキュリティヘッダーとキーを含まない URL、`/v1` の応答が従来どおりであること、再送・同時送信の二重送信で 1 回しか変わらないこと
+  - `scripts/console_smoke.py`: ローカル開発用運営者で発行 → 停止 → 再開 → メモ変更 → 操作記録 → 利用履歴 → サインアウトを確認し、画面で発行したライセンスが API で上限なしとして使えること（上限 1 のライセンスとの比較）を確かめる
+  - `scripts/console_browser_check.py`: Chrome と WebKit で、表示される見出しがなく発行リンクがメニューを開くまで見えないことを確かめ、メニューから発行 → 停止（確認）→ 検索（Enter と状態の選択）→ サインアウトを操作し、POST が拒否されないこととブラウザのコンソールにエラーがないこと
+  - `scripts/console_runtime_check.py`: すべての画面応答のセキュリティヘッダーとキーを含まない URL、静的ファイルの `_headers` によるヘッダーと `_headers` 自体が配信されないこと、`/v1` の応答が従来どおりであること、再送・同時送信の二重送信で 1 回しか変わらないこと
   - `scripts/console_d1_check.py`: ローカル D1 で batch の取り消し、`json_object` の整数、`NULLIF`、日本語の `instr` 検索
   - `scripts/console_access_fetch_check.py`: Access 設定を入れた一時的な `wrangler dev` で、ランタイムの fetch による公開鍵の取得と署名検証（403・`bad_signature`）
   - 既存の `scripts/smoke_flow.sh`・`scripts/concurrency_check.py` を再実行し、結果が変わらないこと
@@ -725,8 +762,24 @@ CREATE INDEX idx_console_audit_logs_license ON console_audit_logs (license_key, 
 
 ## Migration Strategy
 - `0002` は列の追加と新しいテーブルのみで、既存の行・API に影響しない。既存ライセンスの `memo` は空文字、`public_id` はマイグレーション内で付与する。
-- 本番適用手順: `uv run pywrangler d1 migrations apply DB --remote` → デプロイ → Access アプリケーションの作成と `ACCESS_TEAM_DOMAIN`・`ACCESS_AUD` の設定 → `CONSOLE_SESSION_SECRET` の登録 → 実トークンでの画面確認。
+- 本番適用手順: 下の「Deployment」を参照。
 - ロールバック: 画面の不具合は `/console` の Access アプリケーションを無効化（または Worker の前バージョンへ戻す）で遮断できる。追加した列とテーブルは残しても既存機能に影響しない。
+
+## Deployment（本番での有効化）
+
+license-usage-service の Deployment（D1 の作成、`database_id` の置き換え、カスタムドメイン、Always Use HTTPS）を済ませた後に行う。
+
+1. マイグレーションを適用する: `uv run pywrangler d1 migrations apply DB --remote`（`0002` が未適用なら適用される）。
+2. セッションの秘密鍵を登録する: `uv run pywrangler secret put CONSOLE_SESSION_SECRET`（32 バイト以上のランダム値）。`CONSOLE_DEV_OPERATOR_EMAIL` は登録しない。
+3. Cloudflare Zero Trust で Access のセルフホスト アプリケーションを作る。対象はカスタムドメインの `/console` と `/console/*`（静的ファイル `/console/assets/*` も含む）。ポリシーで運営者のメールアドレスまたはグループを許可し、IdP で多要素認証を必須にする。セッション期間を決める（例: 24 時間）。
+4. `wrangler.jsonc` の `vars` に `ACCESS_TEAM_DOMAIN`（`https://<team>.cloudflareaccess.com`）と、アプリケーションの AUD タグを `ACCESS_AUD` として設定する。どちらかが空の間は画面が 503 を返す（フェイルクローズ）。
+5. デプロイする: `uv run pywrangler deploy`。
+6. 確認する:
+   - Access を通さずに（Access の Service Auth なしで）`/console` を開くと Access のログインへ送られること。
+   - 運営者でサインインし、一覧に運営者名が表示され、発行 → 停止 → 再開 → メモ変更ができ、操作記録に残ること。
+   - 応答に CSP・HSTS・`Cache-Control: no-store` が付くこと。
+   - `/v1/*` が Access の対象外で、クライアントアプリから従来どおり使えること。
+7. 秘密鍵を変更すると全運営者のセッションが無効になる（再サインインが必要）。画面の不具合時は Access アプリケーションを無効にするか、Worker を前のバージョンへ戻す（Migration Strategy のロールバックを参照）。
 
 ## Open Questions / Risks
 - **テンプレートのバンドル**: 確認済み。`src/license_server/console/templates/` の `.html` は `PackageLoader` で読める形でバンドルに含まれ、`public/` の静的ファイルは Worker より前に配信される。

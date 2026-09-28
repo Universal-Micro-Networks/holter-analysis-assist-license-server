@@ -5,5 +5,5 @@ ADMIN_API_TOKEN=change-me-local-admin-token
 CONSOLE_SESSION_SECRET=change-me-local-console-session-secret-0123456789
 
 # Local only: signs in to /console as this operator without Cloudflare Access.
-# Ignored when ACCESS_AUD is set or the host is not loopback. Never set it in production.
+# Ignored when ACCESS_TEAM_DOMAIN or ACCESS_AUD is set; other hosts than loopback get 503. Never set it in production.
 CONSOLE_DEV_OPERATOR_EMAIL=dev-operator@example.com

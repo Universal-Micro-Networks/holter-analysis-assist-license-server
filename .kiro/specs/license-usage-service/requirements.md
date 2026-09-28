@@ -47,7 +47,7 @@ License Usage Service は、利用者の端末にインストールされたア�
 **Objective:** As a クライアントアプリ, I want 推論を実行するたびに利用を記録したい, so that ライセンスごとの推論回数を正確に把握できる
 
 #### Acceptance Criteria
-1. When 有効なライセンスで当月の利用回数が月間上限未満の状態で推論利用の記録が要求される, the License Usage Service shall 利用履歴にライセンスキーと利用日時を含む記録を1件追加する
+1. When 有効なライセンスで当月の利用回数が月間上限未満の状態（月間上限回数が 0 の場合は 3.6 により常に上限未満とみなす）で推論利用の記録が要求される, the License Usage Service shall 利用履歴にライセンスキーと利用日時を含む記録を1件追加する
 2. When 推論利用の記録が成功する, the License Usage Service shall 利用が許可されたことと、記録後の当月利用回数および残り回数を返す
 3. The License Usage Service shall 利用日時をサーバー側の時刻で記録し、クライアントアプリが申告した時刻を利用回数の集計に用いない
 4. If 無効なライセンスキーまたは利用停止中のライセンスで記録が要求された, then the License Usage Service shall 利用履歴を追加せずにエラーを返す
@@ -81,7 +81,7 @@ License Usage Service は、利用者の端末にインストールされたア�
 2. When 運営者が既存ライセンスの月間上限回数の変更を要求する, the License Usage Service shall そのライセンスの月間上限回数を更新する
 3. When 運営者がライセンスの無効化を要求する, the License Usage Service shall そのライセンスを利用停止状態にし、以降の利用記録を拒否する
 4. When 運営者が無効化されたライセンスの再有効化を要求する, the License Usage Service shall そのライセンスを有効状態に戻す
-5. If 月間上限回数に0未満の値または整数以外の値が指定された, then the License Usage Service shall 登録・更新を行わずにエラーを返す
+5. If 月間上限回数に0未満の値、1,000,000 を超える値、または整数以外の値が指定された, then the License Usage Service shall 登録・更新を行わずにエラーを返す
 6. The License Usage Service shall ライセンスを無効化しても、そのライセンスの利用履歴を削除しない
 
 ### Requirement 6: 利用履歴の参照
@@ -98,13 +98,13 @@ License Usage Service は、利用者の端末にインストールされたア�
 #### Acceptance Criteria
 1. If 運営者としての認証情報を持たない要求が管理機能（ライセンス管理・利用履歴の参照）に対して行われた, then the License Usage Service shall 処理を行わずに認証エラーを返す
 2. The License Usage Service shall ライセンスキーおよび認証情報を暗号化された通信経路でのみ受け付ける
-3. If 短時間に同一の送信元から不正なライセンスキーによる要求が繰り返された, then the License Usage Service shall 一定時間その送信元からの要求を制限する
+3. If 短時間に同一の送信元から不正なライセンスキーによる要求が繰り返された, then the License Usage Service shall 一定時間その送信元からの要求を制限する（制限の判定には、正しいライセンスキーによる要求を含む同一送信元のすべての要求を数える）
 4. The License Usage Service shall ログにライセンスキーや認証情報を平文のまま出力しない
 
 ### Requirement 8: 応答と障害時の振る舞い
 **Objective:** As a クライアントアプリの開発者, I want 一貫した形式で結果とエラー理由を受け取りたい, so that クライアントアプリで状況に応じた処理と表示ができる
 
 #### Acceptance Criteria
-1. The License Usage Service shall すべての応答で、成功・失敗と、失敗時には理由を識別できるエラー種別を一貫した形式で返す
+1. The License Usage Service shall すべての API の応答で、成功・失敗と、失敗時には理由を識別できるエラー種別を一貫した形式で返す（管理画面の応答は admin-console spec に従う）
 2. The License Usage Service shall 「ライセンス無効」「利用停止中」「月間上限到達」「要求不正」「認証エラー」「一時的な障害」を互いに区別できるエラー種別として返す
 3. If データベースに接続できない、または内部エラーが発生した, then the License Usage Service shall 内部の詳細情報を含めずに一時的な障害であることを示すエラーを返す

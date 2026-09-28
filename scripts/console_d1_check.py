@@ -6,7 +6,7 @@ Checks what the SQLite test double cannot prove about D1 itself:
 - json_object() output, NULLIF for a missing source IP, and instr() search on Japanese text
 
 `wrangler d1 execute` cannot bind parameters, so this script inlines the (script-generated) values as SQL
-literals. The Worker's own binding path is covered by scripts/console_smoke.sh.
+literals. The Worker's own binding path is covered by scripts/console_smoke.py.
 
 Usage: docker compose up -d app && uv run python scripts/console_d1_check.py
 Leaves a few test licenses and audit records in the local D1 (audit records cannot be deleted by design).

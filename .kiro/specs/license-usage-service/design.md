@@ -37,6 +37,8 @@
 ### Allowed Dependencies
 - Cloudflare Workers Python ランタイム（Pyodide）と `workers` モジュール（`wsgi`, `WorkerEntrypoint`）
 - D1 バインディング `DB`、レート制限バインディング `RATE_LIMITER`、Worker Secret `ADMIN_API_TOKEN`
+  - 同じ Worker の管理画面（admin-console spec）が、変数 `ACCESS_TEAM_DOMAIN`・`ACCESS_AUD`、Secret `CONSOLE_SESSION_SECRET`・`CONSOLE_DEV_OPERATOR_EMAIL`（ローカル専用）、Static Assets（`public/`）を追加で使う。これらの定義と意味は admin-console の設計が持つ。`config.py` はどちらの設定も読む共有モジュールである
+  - バインディングの取得に失敗した場合（`workers.env` や `DB` がない）は `RuntimeError` となり、`temporary_failure`（503）で応答する。空文字の `ADMIN_API_TOKEN` は未設定として扱う
 - Flask 3.x
 - 依存方向の制約: 下位層は上位層を import しない（Architecture 参照）。`pyodide` / `js` / `workers` への依存は `repository/d1.py`・`http/`・`worker.py` に限定する
 
@@ -77,21 +79,25 @@ graph TB
 
 **Dependency Direction**（左の層は右の層を import しない。違反はレビューでエラーとして扱う）:
 
-`domain` → `config` → `repository` → `services` → `http` → `worker.py`
+`domain` → `config` → `repository` → `services` → `http` / `console` → `wiring` → `app` → `worker.py`
 
 - `domain`: 型・エラーコード・期間計算・キー形式（外部依存なし）
 - `repository/base.py`: Protocol 定義（`domain` のみに依存）
 - `repository/d1.py`: D1 アダプタ（`pyodide.ffi` に依存）
 - `services`: `domain` と `repository/base.py` のみに依存（`d1.py` を直接 import しない）
-- `http`: Flask・サービス・`config` に依存。リポジトリ実装の生成（D1 アダプタの注入）を担う
+- `http`: Flask・サービス・`config` に依存。依存オブジェクトはファクトリとして受け取り、リポジトリ実装は生成しない
+- `console`: 管理画面（admin-console spec）。`http` と同じ層
+- `wiring.py`: 本番用の依存の組み立て（`D1Repository`・各サービス・`WorkersRateLimiter`・UTC 時計の生成）。API 用の `workers_dependencies` と画面用のファクトリを提供する
+- `app.py`: `create_app(dependencies, console_dependencies)` で API と画面の Blueprint を登録し、共通のエラー処理・アクセスログを組み込む
+- `worker.py`: `create_app(workers_dependencies, <画面用ファクトリ>)` を `workers.wsgi` で公開する
 
 ### Technology Stack
 
 | Layer | Choice / Version | Role in Feature | Notes |
 |-------|------------------|-----------------|-------|
-| Backend / Services | Python 3.12+（Pyodide ランタイム）, Flask 3.x | HTTP ルーティング、入力検証、ビジネスロジック | `workers.wsgi.entrypoint` で公開 |
+| Backend / Services | Python 3.13（テスト、`.python-version`）/ 3.14（pywrangler が作る Pyodide バンドル）, Flask 3.1 | HTTP ルーティング、入力検証、ビジネスロジック | `workers.wsgi.entrypoint` で公開 |
 | Data / Storage | Cloudflare D1（SQLite 互換） | ライセンスと利用履歴の永続化、上限判定 | マイグレーションは `wrangler d1 migrations` |
-| Infrastructure / Runtime | Cloudflare Workers, pywrangler（`workers-py`）, Wrangler 4.36+ | 実行・ローカル開発・デプロイ | `compatibility_flags: ["python_workers"]` |
+| Infrastructure / Runtime | Cloudflare Workers, pywrangler（`workers-py`）, Wrangler（`package.json` で 4.142.0 に固定。Rate Limiting binding に 4.36 以上が必要） | 実行・ローカル開発・デプロイ | `compatibility_flags: ["python_workers"]` |
 | Package / Tooling | uv | 依存関係の管理、仮想環境、コマンド実行 | pip / poetry は使わない。`uv.lock` をコミットする |
 | Package / Tooling | Node.js 24 LTS, npm 11（`wrangler` を `package.json` で固定） | pywrangler が内部で呼ぶ `npx wrangler` の実行 | Node パッケージは wrangler のみ |
 | Local Environment | Docker, Docker Compose v2 | ローカル開発サーバーとテストの起動 | 本番では使わない |
@@ -100,7 +106,9 @@ graph TB
 
 **uv の運用規約**:
 - 本番依存は `uv add <pkg>`（`[project].dependencies`）、開発依存は `uv add --dev <pkg>`（`[dependency-groups].dev`）で追加する。`pyproject.toml` を手で編集して依存を足さない。
-- コマンドはすべて `uv run` 経由で実行する: `uv run pywrangler dev`（ローカル起動）、`uv run pywrangler deploy`（デプロイ）、`uv run pytest`（テスト）、`uv run pywrangler d1 migrations apply DB`（マイグレーション）。
+- コマンドはすべて `uv run` 経由で実行する: `uv run pywrangler dev`（ローカル起動）、`uv run pywrangler deploy`（デプロイ）、`uv run pytest`（テスト）、`uv run pywrangler d1 migrations apply DB --local`（ローカル D1）/ `--remote`（本番 D1）（マイグレーション）。
+- pytest の設定は `pyproject.toml` の `[tool.pytest.ini_options]`（`pythonpath = ["src", "."]`、`--import-mode=importlib`）。型検査は `uv run --with mypy mypy --strict src/license_server src/worker.py` で行う（mypy は依存に含めない）。
+- pywrangler が生成する `pylock.toml` は gitignore・dockerignore の対象。
 - `uv.lock` をリポジトリにコミットし、`uv sync` で環境を再現する。Python のバージョンは `.python-version` で固定する。
 
 ## File Structure Plan
@@ -114,25 +122,30 @@ package.json / package-lock.json       # wrangler のバージョン固定（pyw
 Dockerfile                             # ローカル開発用イメージ（Node.js＋uv＋Python）
 docker-compose.yml                     # app（開発サーバー）と test（pytest）サービス
 .dockerignore                          # .venv, .venv-workers, python_modules, node_modules, .wrangler などを除外
-.dev.vars.example                      # ローカル用 Secret の雛形（ADMIN_API_TOKEN）。実ファイル .dev.vars は gitignore
+.dev.vars.example                      # ローカル用 Secret の雛形（ADMIN_API_TOKEN と管理画面用の値）。実ファイル .dev.vars は gitignore
 docker/
-└── dev-entrypoint.sh                  # 依存同期 → ローカル D1 マイグレーション → pywrangler dev 起動
-wrangler.jsonc                         # main, compatibility flags, d1_databases(DB), ratelimits(RATE_LIMITER)
+└── dev-entrypoint.sh                  # .dev.vars の作成 → 依存同期 → ローカル D1 マイグレーション → pywrangler dev 起動
+wrangler.jsonc                         # main, compatibility flags, d1_databases(DB), ratelimits(RATE_LIMITER), assets(public),
+                                       # vars(ACCESS_*), observability, workers_dev/preview_urls 無効
 migrations/
-└── 0001_create_licenses_and_usage_logs.sql   # テーブル・インデックス定義（正本スキーマ）
+├── 0001_create_licenses_and_usage_logs.sql   # licenses・usage_logs とインデックス
+└── 0002_admin_console.sql                    # 管理画面用の列・操作記録テーブル（admin-console spec）
+public/console/assets/                 # 管理画面の静的ファイル（admin-console spec）
 src/
-├── worker.py                          # Workers エントリポイント: Default = wsgi.entrypoint(create_app(workers_dependencies))
+├── worker.py                          # Workers エントリポイント: Default = wsgi.entrypoint(create_app(workers_dependencies, workers_console_dependencies))
 └── license_server/
     ├── __init__.py
-    ├── app.py                         # create_app(dependencies): Blueprint 登録、アクセスログ、共通エラーハンドラ
-    ├── config.py                      # バインディング・Secret の取得（request.environ["workers.env"] 経由）
+    ├── app.py                         # create_app(dependencies, console_dependencies): Blueprint 登録、アクセスログ、共通エラーハンドラ
+    ├── config.py                      # バインディング・Secret の取得（request.environ["workers.env"] 経由）。管理画面の設定も読む
+    ├── wiring.py                      # 本番用の依存の組み立て（workers_dependencies / workers_console_dependencies）
+    ├── console/                       # 管理画面（admin-console spec）
     ├── domain/
-    │   ├── types.py                   # License, UsageSummary, Period などのデータクラスと列挙
+    │   ├── types.py                   # License, UsageSummary, UsageLogEntry, Period, UNLIMITED などのデータクラス・定数と列挙
     │   ├── errors.py                  # ErrorCode 列挙と ServiceError 例外
-    │   ├── period.py                  # JST 暦月の半開区間計算、UTC 時刻文字列の生成、入力時刻・月の解析
+    │   ├── period.py                  # JST 暦月の半開区間計算、UTC 時刻文字列の生成、入力時刻・月の解析（画面用の JST 表示・日付範囲も持つ）
     │   └── license_key.py             # キー生成・形式検証・ログ用フィンガープリント
     ├── repository/
-    │   ├── base.py                    # LicenseRepository / UsageRepository Protocol、例外、InsertResult
+    │   ├── base.py                    # LicenseRepository / UsageRepository（と画面用 ConsoleRepository）Protocol、例外、InsertResult
     │   ├── sql.py                     # D1 とテスト用 SQLite で共有する SQL と行変換
     │   └── d1.py                      # D1 実装（run_sync で非同期 API を同期化）
     ├── services/
@@ -149,15 +162,18 @@ src/
         ├── client_routes.py           # /v1/licenses/verify, /v1/usage, /v1/usage/current
         └── admin_routes.py            # /v1/admin/*
 scripts/
-├── smoke_flow.sh                      # 開発サーバーに対する curl の通し確認（発行→確認→記録→停止→再開）
-└── concurrency_check.py               # 上限 10 に 30 件を並行送信し、成功がちょうど 10 件になることを確認
+├── smoke_flow.sh                      # 開発サーバーに対する curl の通し確認（発行→確認→記録→当月状況→停止→再開→上限到達→履歴）
+├── concurrency_check.py               # 上限 10 に 30 件を並行送信し、成功がちょうど 10 件になることを確認
+└── console_*.py                       # 管理画面の確認スクリプト（admin-console spec）
 tests/
 ├── fakes/
-│   ├── sqlite_repository.py           # 標準 sqlite3 による Protocol 実装（マイグレーション SQL と sql.py を使用）
-│   └── fake_d1.py                     # D1 バインディングの最小フェイク（D1Repository の単体テスト用）
-├── contract/                          # SqliteRepository がリポジトリ契約を満たすことのテスト
-├── unit/                              # domain・repository・services・http 部品・設定ファイルの単体テスト
-└── integration/                       # Flask テストクライアント＋フェイクによる API・シナリオ・ログのテスト
+│   ├── sqlite_repository.py           # 標準 sqlite3 による Protocol 実装（migrations/*.sql をすべて名前順に適用し、sql.py を使用）
+│   ├── fake_d1.py                     # D1 バインディングの最小フェイク（D1Repository の単体テスト用）
+│   └── access.py                      # Cloudflare Access の JWT・公開鍵のフェイク（管理画面用）
+├── contract/                          # SqliteRepository がリポジトリ契約（API 用・画面用）を満たすことのテスト
+├── unit/                              # domain・repository・services・http 部品・console 部品の単体テスト、
+│                                      # 設定ファイルの検証（test_config / test_project_config / test_docker_config / test_migrations）
+└── integration/                       # Flask テストクライアント＋フェイクによる API・シナリオ・ログ・結線（test_workers_wiring）、console/ に画面のテスト
 ```
 
 ### Modified Files
@@ -180,9 +196,9 @@ graph LR
 ```
 
 **イメージ（`Dockerfile`）**
-- ベースは `node:24-bookworm-slim`（workerd が glibc を必要とするため Alpine は使わない。`package.json` の `allowScripts` を解釈する npm 11 に合わせる）。uv は公式イメージ `ghcr.io/astral-sh/uv` からバイナリをコピーし、Python はテスト用の 3.13 と Workers バンドル用の 3.14 を `uv python install` で入れる。
-- ビルド時に `uv sync`（dev グループ込み）、`uv run pywrangler sync`、`npm ci` を実行し、起動のたびに依存をダウンロードしないようにする。
-- 環境変数: `UV_PROJECT_ENVIRONMENT=/opt/venv`（ホスト側 `.venv` と衝突させない）、`UV_LINK_MODE=copy`、`UV_FROZEN=1`。
+- ベースは `node:24-bookworm-slim`（workerd が glibc を必要とするため Alpine は使わない。`package.json` の `allowScripts` を解釈する npm 11 に合わせる）。uv は公式イメージ `ghcr.io/astral-sh/uv:0.12.17` からバイナリをコピーし、Python はテスト用の 3.13 と Workers バンドル用の 3.14 を `uv python install` で入れる。apt で `ca-certificates`・`curl`（ヘルスチェック用）・`git` を入れ、`/app` を git の `safe.directory` に登録する。
+- ビルド時に `uv sync --no-install-project`（dev グループ込み）、`uv run pywrangler sync`、`npm ci` を実行し、起動のたびに依存をダウンロードしないようにする。`package-lock.json` のハッシュを `node_modules/.lock-hash` に保存する。
+- 環境変数: `UV_PROJECT_ENVIRONMENT=/opt/venv`（ホスト側 `.venv` と衝突させない）、`UV_PYTHON_INSTALL_DIR=/opt/uv-python`、`UV_LINK_MODE=copy`、`UV_FROZEN=1`、`WRANGLER_SEND_METRICS=false`。
 - amd64 / arm64（Apple Silicon）の両方でビルドできること。
 
 **サービス（`docker-compose.yml`）**
@@ -190,7 +206,10 @@ graph LR
 | Service | Command | Ports | 用途 |
 |---------|---------|-------|------|
 | app | `docker/dev-entrypoint.sh` | `8787:8787` | 開発サーバー。`docker compose up` で起動 |
-| test | `uv run pytest` | なし | テスト。`docker compose run --rm test` で実行（`profiles: [test]` で `up` 時は起動しない） |
+| test | `uv run pytest` | なし | テスト。`docker compose run --rm test` で実行（`profiles: [test]` で `up` 時は起動しない）。マウントはソースと uv キャッシュのみ |
+
+- `app` の `healthcheck` は `curl -fsS http://localhost:8787/healthz`（間隔 10 秒、タイムアウト 5 秒、12 回、開始猶予 60 秒）。
+- コンテナ内の実行では Docker 関連の設定テスト（`tests/unit/test_docker_config.py`）はスキップされる。
 
 **ボリューム**
 - ソースコード: `.:/app` をバインドマウントし、変更を `wrangler dev` の自動再読み込みで反映する。
@@ -199,12 +218,14 @@ graph LR
 - ローカル D1 を初期化したいときは `docker compose down -v` でボリュームごと削除する。
 
 **起動処理（`docker/dev-entrypoint.sh`）**
-1. `uv sync`（`pyproject.toml` が変わっていた場合に備える）
-2. `uv run pywrangler d1 migrations apply DB --local`（未適用のマイグレーションだけを適用）
-3. `exec uv run pywrangler dev --ip 0.0.0.0 --port 8787`（コンテナ外から接続できるよう全インターフェースで待ち受ける）
+1. `.dev.vars` がなければ `.dev.vars.example` をコピーして作る
+2. `uv sync`（`pyproject.toml` が変わっていた場合に備える）
+3. `package-lock.json` のハッシュが `node_modules/.lock-hash` と異なれば `npm ci` をやり直す
+4. `uv run pywrangler d1 migrations apply DB --local`（未適用のマイグレーションだけを適用）
+5. `exec uv run pywrangler dev --ip 0.0.0.0 --port 8787`（コンテナ外から接続できるよう全インターフェースで待ち受ける）
 
 **Secret とヘルスチェック**
-- `ADMIN_API_TOKEN` はプロジェクト直下の `.dev.vars` から wrangler が読み込む。`.dev.vars.example` をコピーして作る。
+- `ADMIN_API_TOKEN`（と管理画面用の `CONSOLE_SESSION_SECRET`・`CONSOLE_DEV_OPERATOR_EMAIL`）はプロジェクト直下の `.dev.vars` から wrangler が読み込む。初回起動時にエントリポイントが `.dev.vars.example` から作る。
 - `GET /healthz` を追加する（認証・レート制限・DB アクセスなし。`{"ok": true, "data": {"status": "ok"}}` を返す）。compose の `healthcheck` はこれを使う。
 
 **範囲外**
@@ -421,8 +442,13 @@ class UsageRepository(Protocol):
                       after_id: int | None, limit: int) -> list[UsageLogEntry]: ...
 ```
 - Preconditions: `license_key` は形式検証済み。`period.start_utc < period.end_utc`。
-- Postconditions: `try_insert_within_limit` が `inserted=True` を返した場合、挿入後の当月件数は `monthly_limit` 以下である。
-- Invariants: 任意の時点で、ライセンスの当月件数は（上限を下げた場合を除き）`monthly_limit` を超えない。
+- Postconditions: `try_insert_within_limit` が `inserted=True` を返した場合、挿入後の当月件数は `monthly_limit` 以下である（`monthly_limit` が 0＝上限なしの場合を除く）。
+- Invariants: 任意の時点で、ライセンスの当月件数は（上限を下げた場合と上限なしの場合を除き）`monthly_limit` を超えない。
+- `create` は `public_id`（`lic_` ＋ 16 桁 16 進数、SQL の `randomblob(8)`）も同時に採番する。API から発行したライセンスにも付く（管理画面の URL 用。API の応答には含めない）。`public_id` の衝突も `DuplicateLicenseKey` として扱い、発行の再試行に回す。
+- ライセンスを返す SELECT はすべて `memo` と `public_id` を含む（API の DTO では使わない）。
+- `set_status` は状態が変わらない場合も `updated_at` を更新する（`suspend`・`activate` の冪等な呼び出しでも最終更新日時が進む）。
+- `UsageLogEntry` の定義は `domain/types.py` にある（リポジトリの Protocol はそれを返す）。
+- `D1Repository` は管理画面用の `ConsoleRepository` も実装する（admin-console spec）。
 
 ##### State Management
 - Persistence & consistency: D1 プライマリのみを使用し、Sessions API（読み取りレプリカ）は使わない。
@@ -544,6 +570,10 @@ class UsageService:
 - `/healthz` はレート制限・DB アクセスの対象外とし、docker-compose のヘルスチェックに使う。
 - `from` / `to` は ISO 8601（タイムゾーン必須）で受け取り、UTC に正規化して半開区間 `[from, to)` として扱う。
 - 管理 API は参照系も POST とする（ライセンスキーを URL に載せないため）。
+- 管理 API の入力規則: ボディは JSON オブジェクトであること。`monthly_limit` は 0〜1,000,000 の整数（`bool` と小数は不可。0 は上限なし）。`limit` は 1〜1000 の整数（既定 100）。`after_id` は 0 以上の整数（任意）。`from` は `to` より前であること。いずれも違反は `invalid_request`（400）。
+- `/v1/admin/usage/logs` は `id` の昇順で返し、`limit + 1` 件を読んで続きがあれば `next_after_id` にそのページの最後の `id` を入れる（続きがなければ `null`）。
+- `verify` の `status` は常に `"active"`（停止中・未登録はエラーで返すため）。
+- 管理 API の対象キーも、アクセスログでは `key_fingerprint` として記録する。
 
 #### auth
 
@@ -591,11 +621,14 @@ def enforce_rate_limit(limiter: RateLimiter | None, source_ip: str | None) -> No
 ```
 - `binding.limit` には Python の dict をそのまま渡せる（ローカルの workerd で 120 回目以降に 429 となることを確認済み）。
 - 送信元 IP が取れない場合のキーは `"unknown"`。
+- 同じ `RATE_LIMITER` を管理画面（`/console`）も同じキー（送信元 IP）で使うため、API と画面は 1 つの枠（60 秒あたり 120 回）を共有する。静的ファイル（`public/`）は Worker を通らないため数えない。
+- バインディングの呼び出しが失敗した場合は警告をログに出して要求を通す。
+- `ratelimits.namespace_id`（`"1001"`）は Cloudflare アカウント内で一意にする。
 
 #### dependencies
 
-- `create_app(dependencies: Callable[[], Dependencies] | None)` にファクトリを渡し、ルートは `current()` で取得する（`flask.g` に 1 リクエスト 1 回だけ生成）。
-- 本番のファクトリ `workers_dependencies` は `config.bindings_from_environ` で `DB`・`RATE_LIMITER`・`ADMIN_API_TOKEN` を取り出し、`D1Repository`・各サービス・`WorkersRateLimiter` を生成する。テストでは SQLite フェイクと固定時計を使うファクトリを渡す。
+- `create_app(dependencies: Callable[[], Dependencies] | None, console_dependencies: Callable[[], ConsoleDependencies] | None)` にファクトリを渡し、ルートは `current()` で取得する（`flask.g` に 1 リクエスト 1 回だけ生成）。
+- 本番のファクトリ `workers_dependencies` は `wiring.py` にあり、`config.bindings_from_environ` で `DB`・`RATE_LIMITER`・`ADMIN_API_TOKEN` を取り出し、`D1Repository`・各サービス・`WorkersRateLimiter` を生成する。テストでは SQLite フェイクと固定時計を使うファクトリを渡す。
 - `guard_client()` はレート制限 → Bearer 抽出の順、`guard_admin()` はレート制限 → 管理トークン検証の順で適用する。
 
 #### responses / app
@@ -606,9 +639,11 @@ def enforce_rate_limit(limiter: RateLimiter | None, source_ip: str | None) -> No
 | Requirements | 1.5, 2.5, 8.1, 8.2, 8.3 |
 
 **Responsibilities & Constraints**
-- 成功: `{"ok": true, "data": {...}}`。失敗: `{"ok": false, "error": {"code": "<ErrorCode>", "message": "<固定文言>"}}`。
+- 成功: `{"ok": true, "data": {...}}`。失敗: `{"ok": false, "error": {"code": "<ErrorCode>", "message": "<文言>"}}`。文言はコードごとの固定文言を基本とし、`invalid_request` に限って入力のどこが誤りかを示す文言（例: `monthly_limit must be an integer between 0 and 1000000.`、`from must be earlier than to.`）を返す。保存済みのデータや他のライセンスの情報は文言に含めない。
 - `ServiceError` はコードに応じた HTTP ステータスへ変換する。`RepositoryUnavailable` とその他の想定外例外は `TEMPORARY_FAILURE`（503）に変換し、スタックトレースや SQL は応答に含めない。
-- Flask の 404 / 405 も同じエンベロープ（`invalid_request`）で返す。
+- Flask の 404 / 405 は、HTTP ステータスはそのまま（404・405）で、エンベロープのコードは `invalid_request` として返す。
+- `/console` 配下の要求では、同じ例外を管理画面の HTML エラーページで返す（admin-console spec）。エンベロープは `/v1`・`/healthz` などの API に適用する。
+- API には CORS ヘッダーを付けない（ブラウザからの呼び出しは想定しない）。CSP などのセキュリティヘッダーと HSTS は管理画面の応答だけに付ける。
 - 本番環境では HTTP を受け付けない（Workers のカスタムドメインで「Always Use HTTPS」を有効にし、`workers.dev` は無効化）。
 
 **Contracts**: API [x]
@@ -617,7 +652,7 @@ def enforce_rate_limit(limiter: RateLimiter | None, source_ip: str | None) -> No
 
 ### Domain Model
 - 集約ルートは `License`。`UsageLog` は `License` に従属する追記専用のイベントである。
-- 不変条件: 当月の `UsageLog` 件数 ≤ `License.monthly_limit`（上限を下げた場合は、既存の件数が新上限を超えることを許容し、以降の記録を拒否する）。
+- 不変条件: 当月の `UsageLog` 件数 ≤ `License.monthly_limit`（上限を下げた場合は、既存の件数が新上限を超えることを許容し、以降の記録を拒否する。`monthly_limit` が 0 のライセンスは上限なしで、この条件の対象外）。
 - 当月件数は保持せず、常に `UsageLog` から導出する。
 
 ```mermaid
@@ -639,14 +674,14 @@ erDiagram
 
 ### Physical Data Model
 
-`migrations/0001_create_licenses_and_usage_logs.sql` の内容（正本）:
+`migrations/0001_create_licenses_and_usage_logs.sql` の内容。現在のスキーマは 0001 と `0002_admin_console.sql` を合わせたもので、0002 は `licenses` に `memo`（200 文字以内）・`public_id`（一意索引）と `idx_licenses_created_at` を追加し、操作記録テーブル `console_audit_logs`（`licenses` への外部キーで削除を制限）を作る。0002 の詳細は admin-console の設計を参照。API は `memo`・`public_id` を読み書きしない（`public_id` の採番を除く）:
 
 **licenses**
 
 | Column | Type | Constraint | Notes |
 |--------|------|------------|-------|
 | license_key | TEXT | PRIMARY KEY | `lk_` ＋ 32 桁 16 進数 |
-| monthly_limit | INTEGER | NOT NULL, CHECK (monthly_limit >= 0) | 月間上限回数 |
+| monthly_limit | INTEGER | NOT NULL, CHECK (monthly_limit >= 0) | 月間上限回数。0 は上限なし |
 | status | TEXT | NOT NULL DEFAULT 'active', CHECK (status IN ('active','suspended')) | 設計案からの追加 |
 | created_at | TEXT | NOT NULL | UTC 固定長 ISO 8601 |
 | updated_at | TEXT | NOT NULL | UTC 固定長 ISO 8601 |
@@ -700,7 +735,7 @@ class UsageSummaryDTO(TypedDict):
 
 | ErrorCode | HTTP | 発生条件 | 要件 |
 |-----------|------|----------|------|
-| invalid_request | 400 | キー欠落・形式不正、ボディ不正、上限値不正、未定義パス | 1.4, 5.5 |
+| invalid_request | 400（未定義パスは 404、メソッド不一致は 405） | キー欠落・形式不正、ボディ不正、上限値不正、未定義パス・メソッド | 1.4, 5.5 |
 | license_invalid | 401 | 未登録キー（固定文言で、他ライセンスの情報を含めない） | 1.2, 1.5, 2.4, 4.3 |
 | unauthorized | 401 | 管理トークンの欠落・不一致 | 7.1 |
 | license_suspended | 403 | 停止中ライセンス | 1.3, 2.4, 4.3 |
@@ -714,6 +749,9 @@ class UsageSummaryDTO(TypedDict):
 ### Monitoring
 - Workers Logs（Observability）を有効化し、エラーコード・ルート・キーのフィンガープリント・処理時間を構造化ログで出力する。キー本体と `Authorization` ヘッダーは出力しない。
 - 出力は `after_request` で 1 リクエスト 1 行の JSON を stdout に書く（Workers Logs が JSON をフィールドとして取り込む）。形式: `{"event": "request", "method", "route"（URL ルールのテンプレート。未定義パスは null）, "status", "error_code", "key_fingerprint", "duration_ms"}`。
+  - `error_code` は 400 以上の JSON 応答のエンベロープから読む（HTML の応答では null）。`duration_ms` は 0.1 ミリ秒単位に丸める。
+  - 管理画面の要求では、運営者を識別できた後に限り `operator`（メールアドレス）を追加する。
+- アクセスログとは別に、D1 の障害（`D1 call failed: <例外の型>: <メッセージ>`）、レート制限バインディングの失敗、想定外の例外をログに出す。
 - `temporary_failure` と `rate_limited` の発生件数を監視対象とする。
 
 ## Testing Strategy
@@ -726,16 +764,30 @@ class UsageSummaryDTO(TypedDict):
   - `UsageService.record_usage`: 挿入成功時の残り回数、拒否時の理由判定（未登録・停止中・上限到達）
   - `LicenseService`: 上限値の検証（負数・小数・bool・上限超過）、停止・再開の冪等性
   - `auth.require_admin`: トークン未設定時のフェイルクローズ
-- **Integration Tests**（Flask テストクライアント＋SQLite フェイク。本番と同じマイグレーション SQL を適用）
+- **設定ファイルのテスト**: `wrangler.jsonc`・`package.json`・`.dev.vars.example` の内容（`test_project_config`）、Docker 関連ファイル（`test_docker_config`、コンテナ内ではスキップ）、マイグレーションの制約（`test_migrations`）、設定の読み取り（`test_config`）、本番用の結線（`test_workers_wiring`）
+- **Integration Tests**（Flask テストクライアント＋SQLite フェイク。本番と同じマイグレーション SQL をすべて適用）
   - 上限 N のライセンスで N 回成功し、N+1 回目が `monthly_limit_reached` になり、履歴が N 件であること
+  - 上限 0 のライセンスは何度でも記録でき、`remaining` が `null` になること
   - 停止→記録拒否→再開→記録成功、および停止後も履歴が残ること
   - 上限変更が直後の判定に反映されること
   - すべてのエラーがエンベロープ形式で返り、内部情報を含まないこと（D1 例外を模擬）
   - 管理 API が管理トークンなしで 401 を返すこと
 - **Runtime Tests**（`docker compose up` で起動した `pywrangler dev`＋ローカル D1）
   - Flask＋`run_sync`＋D1 の疎通（初期タスクで実施）
-  - `docker compose up` 後に `GET /healthz` が 200 を返し、ホストの `localhost:8787` から API を呼べること（`scripts/smoke_flow.sh`）
-  - 同一ライセンスへの並行要求（上限 10 に対し 30 並列）で履歴が 10 件を超えないこと（`uv run python scripts/concurrency_check.py`）
+  - `docker compose up` 後に `GET /healthz` が 200 を返し、ホストの `localhost:8787` から API を呼べること（`scripts/smoke_flow.sh`。発行→確認→記録→当月状況→停止中の拒否→再開→上限到達→履歴。`BASE_URL`・`ADMIN_API_TOKEN` は環境変数、なければ `.dev.vars` から読む。応答の本文はライセンスキーを `lk_<redacted>` に伏せて表示する）
+  - 同一ライセンスへの並行要求（上限 10 に対し 30 並列）で、201 がちょうど 10 件、`monthly_limit_reached` が 20 件、履歴が 10 件になること（`uv run python scripts/concurrency_check.py`。最初に `/healthz` を確認する）
+
+## Deployment（本番環境の準備と反映）
+
+本番は Cloudflare Workers ＋ D1 で動かす。コマンドはホストまたは CI で `uv run` 経由で実行する（Cloudflare の認証は `wrangler login` または `CLOUDFLARE_API_TOKEN`）。
+
+1. D1 データベースを作る: `uv run pywrangler d1 create holter-analysis-assist-license`。表示された ID で `wrangler.jsonc` の `database_id`（リポジトリではダミー値）を置き換える。
+2. マイグレーションを本番 D1 に適用する: `uv run pywrangler d1 migrations apply DB --remote`（0001・0002 の順に未適用のものだけ）。
+3. Secret を登録する: `uv run pywrangler secret put ADMIN_API_TOKEN`、`uv run pywrangler secret put CONSOLE_SESSION_SECRET`（どちらも十分に長いランダム値）。`CONSOLE_DEV_OPERATOR_EMAIL` は本番に登録しない。
+4. 公開経路を設定する: `wrangler.jsonc` に `routes`（`custom_domain: true`）を追加し、ゾーンで「Always Use HTTPS」を有効にする。`workers_dev` と `preview_urls` は無効のままにする。
+5. 管理画面を使う場合は、Cloudflare Access のアプリケーションで `/console` 配下を保護し、`wrangler.jsonc` の `vars` に `ACCESS_TEAM_DOMAIN`・`ACCESS_AUD` を設定する（admin-console spec の Deployment を参照）。
+6. `ratelimits.namespace_id` がアカウント内で他の Worker と重複しないことを確認する。
+7. デプロイする: `uv run pywrangler deploy`。反映後に `GET /healthz` と `scripts/smoke_flow.sh`（`BASE_URL` と `ADMIN_API_TOKEN` を本番の値にして実行）で確認する。smoke_flow は確認用のライセンスを実際に発行するため、本番では必要なときだけ実行する。
 
 ## Security Considerations
 - 医療現場で使われるアプリのため、推論の入力データ・結果（心電図データ等）を受け取らない API 形状とする（2.6）。利用記録リクエストはボディ不要。
