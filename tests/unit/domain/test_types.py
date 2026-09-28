@@ -42,6 +42,11 @@ def test_usage_summary_remaining_never_negative_after_limit_is_lowered() -> None
     assert summary.remaining == 0
 
 
+def test_usage_summary_of_zero_limit_is_unlimited() -> None:
+    summary = UsageSummary.of(used=120, monthly_limit=0, period=PERIOD)
+    assert (summary.used, summary.monthly_limit, summary.remaining) == (120, 0, None)
+
+
 def test_usage_log_entry_holds_id_and_timestamp_only() -> None:
     entry = UsageLogEntry(id=1, used_at="2026-09-28T00:00:00.000Z")
     assert [field.name for field in dataclasses.fields(entry)] == ["id", "used_at"]

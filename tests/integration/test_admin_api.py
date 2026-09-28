@@ -51,6 +51,10 @@ class TestLicenses:
             "updated_at": "2026-09-15T03:00:00.000Z",
         }
 
+    def test_license_responses_do_not_expose_console_fields(self, client: FlaskClient) -> None:
+        data = client.post("/v1/admin/licenses", json={"monthly_limit": 5}, headers=ADMIN).get_json()["data"]
+        assert set(data) == {"license_key", "monthly_limit", "status", "created_at", "updated_at"}
+
     @pytest.mark.parametrize("body", [{}, {"monthly_limit": -1}, {"monthly_limit": "10"}, {"monthly_limit": 1.5}, [1]])
     def test_issue_validates_monthly_limit(self, client: FlaskClient, body: object) -> None:
         assert error_of(client.post("/v1/admin/licenses", json=body, headers=ADMIN)) == (400, "invalid_request")

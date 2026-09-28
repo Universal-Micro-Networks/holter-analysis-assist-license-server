@@ -63,6 +63,7 @@ License Usage Service は、利用者の端末にインストールされたア�
 3. When 同一ライセンスで同時に複数の推論利用の記録が要求される, the License Usage Service shall 当月の利用回数が月間上限回数を超えないように記録を受け付ける
 4. When 新しい月が始まる, the License Usage Service shall 前月までの利用履歴を当月の利用回数に含めずに判定する
 5. When 運営者が月間上限回数を変更する, the License Usage Service shall 以降の利用可否の判定に変更後の上限回数を用いる
+6. While ライセンスの月間上限回数が 0 である, the License Usage Service shall そのライセンスを上限なしとして扱い、月間上限による拒否を行わず、記録結果と利用状況の残り回数を「なし」（`null`）として返す（管理画面から発行したライセンスは月間上限 0 で登録される）
 
 ### Requirement 4: 当月利用状況の照会
 **Objective:** As a クライアントアプリ, I want 当月の利用回数と残り回数を確認したい, so that 利用者に残り回数を表示できる

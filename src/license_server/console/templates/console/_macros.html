@@ -1,0 +1,11 @@
+{% macro status_badge(license) -%}
+<span class="badge rounded-pill {{ 'text-bg-success' if license.status.value == 'active' else 'text-bg-danger' }}">{{ license.status | status_label }}</span>
+{%- endmacro %}
+
+{% macro licensee(license) -%}
+{{ license.memo or "（ライセンシー未設定）" }}
+{%- endmacro %}
+
+{% macro field_error(message) -%}
+{% if message %}<div class="invalid-feedback d-block">{{ message }}</div>{% endif %}
+{%- endmacro %}

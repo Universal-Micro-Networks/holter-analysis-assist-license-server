@@ -269,6 +269,7 @@ sequenceDiagram
 | 3.3 | 同時要求でも上限を超えない | D1Repository | 単一文の条件付き INSERT | 利用記録 |
 | 3.4 | 前月分を含めない | period | JST 暦月の半開区間 | — |
 | 3.5 | 上限変更を以降の判定に反映 | UsageService, D1Repository | 判定時に licenses を参照 | — |
+| 3.6 | 上限 0 は上限なし（残り回数は null） | UsageSummary, D1Repository | 条件付き INSERT, `UsageSummary.of` | 利用記録 |
 | 4.1 | 当月回数・上限・残り・期間を返す | UsageService | `GET /v1/usage/current` | — |
 | 4.2 | 照会で履歴を追加しない | UsageService | 読み取りのみ | — |
 | 4.3 | 無効・停止中は状況を返さない | UsageService, LicenseService | `license_invalid` / `license_suspended` | — |
@@ -356,7 +357,7 @@ class Period:
 class UsageSummary:
     used: int
     monthly_limit: int
-    remaining: int   # max(monthly_limit - used, 0)
+    remaining: int | None   # max(monthly_limit - used, 0)。monthly_limit が 0（上限なし）のときは None
     period: Period
 
 def month_period(now_utc: datetime) -> Period: ...
@@ -443,7 +444,7 @@ class UsageRepository(Protocol):
 
 **Responsibilities & Constraints**
 - `require_active` は、未登録なら `LICENSE_INVALID`、停止中なら `LICENSE_SUSPENDED` を送出する。クライアント向け処理の共通前提として使う。
-- 月間上限は 0 以上の整数（上限値は 1,000,000）。`bool` は整数として受け付けない。
+- 月間上限は 0 以上の整数（上限値は 1,000,000）。`bool` は整数として受け付けない。0 は「上限なし」を表し（3.6）、利用記録の条件付き INSERT は `monthly_limit = 0 OR 当月件数 < monthly_limit` で判定する。
 - 無効化は状態変更のみで、利用履歴には触れない。
 
 **Contracts**: Service [x]
@@ -683,8 +684,8 @@ class PeriodDTO(TypedDict):
 
 class UsageSummaryDTO(TypedDict):
     used: int
-    monthly_limit: int
-    remaining: int
+    monthly_limit: int          # 0 は上限なし
+    remaining: int | None       # 上限なしのときは null
     period: PeriodDTO
 ```
 - シリアライズは JSON（UTF-8）。API バージョンはパス接頭辞 `/v1` で管理し、破壊的変更時は `/v2` を追加する。

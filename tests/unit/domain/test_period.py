@@ -1,8 +1,11 @@
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
 from license_server.domain.period import (
+    format_jst,
+    jst_date_range,
+    jst_month_bounds,
     month_period,
     month_period_of,
     parse_month,
@@ -86,6 +89,40 @@ def test_parse_timestamp_normalizes_to_utc_text(value: str, expected: str) -> No
 def test_parse_timestamp_requires_timezone_and_valid_format(value: str) -> None:
     with pytest.raises(ValueError):
         parse_timestamp(value)
+
+
+@pytest.mark.parametrize(
+    ("utc_text", "expected"),
+    [
+        ("2026-09-28T04:45:00.000Z", "2026-09-28 13:45:00"),
+        ("2026-09-30T15:00:00.000Z", "2026-10-01 00:00:00"),
+        ("2026-12-31T14:59:59.999Z", "2026-12-31 23:59:59"),
+    ],
+)
+def test_format_jst_shows_japan_time(utc_text: str, expected: str) -> None:
+    assert format_jst(utc_text) == expected
+
+
+def test_jst_date_range_includes_both_days_as_half_open_utc() -> None:
+    assert jst_date_range(date(2026, 9, 1), date(2026, 9, 30)) == Period(
+        "2026-08-31T15:00:00.000Z", "2026-09-30T15:00:00.000Z"
+    )
+
+
+def test_jst_date_range_of_single_day_covers_that_day() -> None:
+    assert jst_date_range(date(2026, 12, 31), date(2026, 12, 31)) == Period(
+        "2026-12-30T15:00:00.000Z", "2026-12-31T15:00:00.000Z"
+    )
+
+
+def test_jst_date_range_rejects_start_after_end() -> None:
+    with pytest.raises(ValueError):
+        jst_date_range(date(2026, 9, 2), date(2026, 9, 1))
+
+
+def test_jst_month_bounds_are_first_and_last_day_of_the_jst_month() -> None:
+    assert jst_month_bounds(utc(2026, 9, 30, 15, 0)) == (date(2026, 10, 1), date(2026, 10, 31))
+    assert jst_month_bounds(utc(2027, 2, 10)) == (date(2027, 2, 1), date(2027, 2, 28))
 
 
 def test_parse_month_returns_year_and_month() -> None:

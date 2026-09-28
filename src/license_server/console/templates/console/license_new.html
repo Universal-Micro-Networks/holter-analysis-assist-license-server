@@ -1,0 +1,27 @@
+{% extends "console/base.html" %}
+{% from "console/_macros.html" import field_error %}
+{% block title %}ライセンスの発行{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    {% if errors %}<div class="alert alert-danger" role="alert">入力内容に誤りがあります。各項目のメッセージを確認してください。</div>{% endif %}
+    <form class="card shadow-sm border-0" method="post" action="{{ url_for('console.create_license') }}">
+      <div class="card-header bg-white fw-semibold py-3">新しいライセンス</div>
+      <div class="card-body">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="request_id" value="{{ request_id }}">
+        <div>
+          <label class="form-label" for="memo">ライセンシー</label>
+          <input type="text" class="form-control{% if errors.memo %} is-invalid{% endif %}" id="memo" name="memo" maxlength="200" value="{{ values.get('memo', '') }}" placeholder="顧客名・施設名・契約番号など">
+          <div class="form-text">200 文字以内</div>
+          {{ field_error(errors.memo) }}
+        </div>
+      </div>
+      <div class="card-footer bg-white d-flex justify-content-end gap-2 py-3">
+        <a class="btn btn-outline-secondary" href="{{ url_for('console.licenses') }}">キャンセル</a>
+        <button type="submit" class="btn btn-primary px-4">発行する</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

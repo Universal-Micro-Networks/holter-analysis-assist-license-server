@@ -1,0 +1,51 @@
+{% extends "console/base.html" %}
+{% from "console/_macros.html" import licensee, field_error %}
+{% block title %}利用履歴{% endblock %}
+{% block content %}
+<nav aria-label="パンくずリスト">
+  <ol class="breadcrumb small mb-3">
+    <li class="breadcrumb-item"><a href="{{ url_for('console.licenses') }}">ライセンス一覧</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('console.license_detail', public_id=license.public_id) }}">{{ licensee(license) }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">利用履歴</li>
+  </ol>
+</nav>
+
+<form class="card card-body shadow-sm border-0 mb-4" method="get" action="{{ url_for('console.usage_logs', public_id=license.public_id) }}">
+  <div class="row g-3 align-items-end">
+    <div class="col-sm">
+      <label class="form-label small text-body-secondary" for="from">開始日（日本時間）</label>
+      <input type="date" class="form-control{% if errors['from'] %} is-invalid{% endif %}" id="from" name="from" value="{{ values['from'] }}">
+      {{ field_error(errors['from']) }}
+    </div>
+    <div class="col-sm">
+      <label class="form-label small text-body-secondary" for="to">終了日（日本時間、この日を含む）</label>
+      <input type="date" class="form-control{% if errors['to'] %} is-invalid{% endif %}" id="to" name="to" value="{{ values['to'] }}">
+      {{ field_error(errors['to']) }}
+    </div>
+    <div class="col-sm-auto"><button type="submit" class="btn btn-primary w-100 px-4">表示</button></div>
+  </div>
+  <div class="form-text">期間を指定しない場合は当月の履歴を表示します。</div>
+</form>
+
+{% if entries is none %}
+<div class="alert alert-danger" role="alert">期間の指定に誤りがあるため、履歴を表示していません。</div>
+{% elif entries %}
+<div class="card shadow-sm border-0">
+  <table class="table table-sm table-hover mb-0">
+    <thead class="table-light"><tr><th>利用日時（日本時間）</th></tr></thead>
+    <tbody>
+      {% for entry in entries %}
+      <tr><td>{{ entry.used_at | jst }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if next_after %}
+<div class="d-flex justify-content-end mt-3">
+  <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('console.usage_logs', public_id=license.public_id, after_id=next_after, **{'from': values['from'], 'to': values['to']}) }}">続きを表示</a>
+</div>
+{% endif %}
+{% else %}
+<div class="card card-body shadow-sm border-0 text-body-secondary">この期間の利用はありません。</div>
+{% endif %}
+{% endblock %}

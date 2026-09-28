@@ -1,0 +1,27 @@
+{% extends "console/base.html" %}
+{% from "console/_macros.html" import licensee %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <section class="card shadow-sm border-0">
+      <div class="card-header bg-white fw-semibold py-3">{{ title }}</div>
+      <div class="card-body">
+        {% if license %}<p class="mb-2"><span class="text-body-secondary small">ライセンシー</span><br>{{ licensee(license) }}</p>{% endif %}
+        {% if warning %}<div class="alert alert-warning" role="alert">{{ warning }}</div>{% endif %}
+        <p class="mb-0">{{ message }}よろしいですか。</p>
+      </div>
+      <form class="card-footer bg-white d-flex justify-content-end gap-2 py-3" method="post" action="{{ action }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="request_id" value="{{ request_id }}">
+        <input type="hidden" name="confirmed" value="1">
+        {% for name, value in fields.items() %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}">
+        {% endfor %}
+        <a class="btn btn-outline-secondary" href="{{ url_for('console.license_detail', public_id=public_id) }}">キャンセル</a>
+        <button type="submit" class="btn {{ 'btn-danger' if destructive else 'btn-success' }} px-4">{{ button }}</button>
+      </form>
+    </section>
+  </div>
+</div>
+{% endblock %}

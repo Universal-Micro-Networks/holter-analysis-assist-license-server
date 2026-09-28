@@ -24,6 +24,15 @@
       }
     }
   ],
+  "assets": {
+    "directory": "public"
+  },
+  // Cloudflare Access for /console: team domain (https://<team>.cloudflareaccess.com) and the application's AUD tag.
+  // While either is empty the console fails closed with 503. Register CONSOLE_SESSION_SECRET with `wrangler secret put`.
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  },
   "observability": {
     "enabled": true
   },

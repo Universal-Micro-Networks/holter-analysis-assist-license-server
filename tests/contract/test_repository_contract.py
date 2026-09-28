@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from license_server.domain.period import month_period_of
@@ -46,6 +48,13 @@ class TestLicenses:
         assert (created.created_at, created.updated_at) == (T0, T0)
         assert repo.find(KEY) == created
 
+    def test_created_license_has_empty_memo_and_unique_public_id(self, repo: SqliteRepository) -> None:
+        first, second = repo.create(KEY, 10, T0), repo.create(OTHER, 10, T0)
+        assert first.memo == ""
+        assert first.public_id is not None and re.fullmatch(r"lic_[0-9a-f]{16}", first.public_id)
+        assert first.public_id != second.public_id
+        assert repo.update_limit(KEY, 20, T1).public_id == first.public_id  # type: ignore[union-attr]
+
     def test_duplicate_key_is_reported(self, repo: SqliteRepository) -> None:
         repo.create(KEY, 10, T0)
         with pytest.raises(DuplicateLicenseKey):
@@ -83,8 +92,14 @@ class TestInsertWithinLimit:
         results = [repo.try_insert_within_limit(KEY, t, SEPTEMBER) for t in minutes(3)]
         assert [(r.inserted, r.used_after, r.monthly_limit) for r in results] == [(True, 1, 2), (True, 2, 2), (False, 2, 2)]
 
-    def test_zero_limit_never_inserts(self, repo: SqliteRepository) -> None:
+    def test_zero_limit_is_unlimited(self, repo: SqliteRepository) -> None:
         repo.create(KEY, 0, T0)
+        assert record(repo, minutes(5)) == [True] * 5
+        assert repo.count_in_period(KEY, SEPTEMBER) == 5
+
+    def test_unlimited_suspended_license_is_not_inserted(self, repo: SqliteRepository) -> None:
+        repo.create(KEY, 0, T0)
+        repo.set_status(KEY, LicenseStatus.SUSPENDED, T1)
         assert record(repo, minutes(1)) == [False]
 
     def test_unknown_license_is_not_inserted(self, repo: SqliteRepository) -> None:
