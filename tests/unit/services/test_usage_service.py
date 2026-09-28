@@ -44,6 +44,11 @@ class TestRecordUsage:
         assert error_code(lambda: service.record_usage(KEY)) is ErrorCode.MONTHLY_LIMIT_REACHED
         assert licensed.count_in_period(KEY, SEPTEMBER) == 3
 
+    def test_zero_limit_records_without_limit(self, service: UsageService, repo: SqliteRepository) -> None:
+        repo.create(KEY, 0, "2026-09-01T00:00:00.000Z")
+        summaries = [service.record_usage(KEY) for _ in range(5)]
+        assert summaries[-1] == UsageSummary(used=5, monthly_limit=0, remaining=None, period=SEPTEMBER)
+
     def test_unknown_license_is_invalid(self, service: UsageService) -> None:
         assert error_code(lambda: service.record_usage(UNKNOWN)) is ErrorCode.LICENSE_INVALID
 

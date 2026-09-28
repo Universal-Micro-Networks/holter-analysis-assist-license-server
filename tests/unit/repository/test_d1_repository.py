@@ -3,9 +3,11 @@ from typing import Any
 import pytest
 
 from license_server.domain.period import month_period_of
-from license_server.domain.types import LicenseStatus, UsageLogEntry
+from license_server.domain.types import AuditContext, LicenseStatus, Operator, UsageLogEntry
 from license_server.repository.base import (
+    ConsoleRepository,
     DuplicateLicenseKey,
+    DuplicateSubmission,
     LicenseRepository,
     RepositoryUnavailable,
     UsageRepository,
@@ -95,3 +97,46 @@ def test_d1_failures_become_repository_unavailable(repo: D1Repository, binding: 
     binding.fail_with = "D1_ERROR: Network connection lost."
     with pytest.raises(RepositoryUnavailable):
         call(repo)
+
+
+class TestConsoleRepository:
+    def test_satisfies_console_protocol(self, repo: D1Repository) -> None:
+        assert isinstance(repo, ConsoleRepository)
+
+    def test_each_audited_write_is_a_single_batch(self, repo: D1Repository, binding: FakeD1Binding) -> None:
+        repo.create_audited(KEY, 5, "", ctx("r1"))
+        repo.update_limit_audited(KEY, 6, ctx("r2"))
+        repo.set_status_audited(KEY, LicenseStatus.SUSPENDED, ctx("r3"))
+        repo.update_memo_audited(KEY, "m", ctx("r4"))
+        repo.record_sign_in(ctx("r5"))
+        assert binding.calls == ["batch"] * 5
+
+    def test_reused_request_id_maps_to_duplicate_submission(self, repo: D1Repository) -> None:
+        repo.create_audited(KEY, 5, "", ctx("r1"))
+        with pytest.raises(DuplicateSubmission) as raised:
+            repo.update_limit_audited(KEY, 6, ctx("r1"))
+        assert raised.value.request_id == "r1"
+
+    def test_duplicate_key_on_audited_issue_maps_to_duplicate_license_key(self, repo: D1Repository) -> None:
+        repo.create_audited(KEY, 5, "", ctx("r1"))
+        with pytest.raises(DuplicateLicenseKey):
+            repo.create_audited(KEY, 5, "", ctx("r2"))
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda r: r.create_audited(KEY, 1, "", ctx("r1")),
+            lambda r: r.update_limit_audited(KEY, 1, ctx("r1")),
+            lambda r: r.record_sign_in(ctx("r1")),
+            lambda r: r.find_by_public_id("lic_0000000000000000"),
+            lambda r: r.list_audits(KEY, 10),
+        ],
+    )
+    def test_other_failures_become_repository_unavailable(self, repo: D1Repository, binding: FakeD1Binding, call) -> None:
+        binding.fail_with = "D1_ERROR: Network connection lost."
+        with pytest.raises(RepositoryUnavailable):
+            call(repo)
+
+
+def ctx(request_id: str) -> AuditContext:
+    return AuditContext(Operator("ops@example.com", "sub"), request_id, None, T0)

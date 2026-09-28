@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -33,11 +34,91 @@ def insert_license(db: sqlite3.Connection, key: str = KEY, monthly_limit: int = 
 
 def test_migration_files_use_wrangler_naming() -> None:
     names = [path.name for path in sorted(MIGRATIONS_DIR.glob("*.sql"))]
-    assert names[0] == "0001_create_licenses_and_usage_logs.sql"
+    assert names[:2] == ["0001_create_licenses_and_usage_logs.sql", "0002_admin_console.sql"]
 
 
 def test_licenses_table_has_designed_columns(db: sqlite3.Connection) -> None:
-    assert columns(db, "licenses") == ["license_key", "monthly_limit", "status", "created_at", "updated_at"]
+    assert columns(db, "licenses") == [
+        "license_key",
+        "monthly_limit",
+        "status",
+        "created_at",
+        "updated_at",
+        "memo",
+        "public_id",
+    ]
+
+
+def test_memo_defaults_to_empty_and_is_limited_to_200_characters(db: sqlite3.Connection) -> None:
+    insert_license(db)
+    assert db.execute("SELECT memo FROM licenses").fetchone() == ("",)
+    db.execute("UPDATE licenses SET memo = ?", ("あ" * 200,))
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("UPDATE licenses SET memo = ?", ("あ" * 201,))
+
+
+def test_public_id_is_unique(db: sqlite3.Connection) -> None:
+    insert_license(db)
+    insert_license(db, key="lk_" + "b" * 32)
+    db.execute("UPDATE licenses SET public_id = 'lic_0000000000000001' WHERE license_key = ?", (KEY,))
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("UPDATE licenses SET public_id = 'lic_0000000000000001' WHERE license_key = ?", ("lk_" + "b" * 32,))
+
+
+def test_0002_backfills_public_id_for_existing_licenses() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript((MIGRATIONS_DIR / "0001_create_licenses_and_usage_logs.sql").read_text(encoding="utf-8"))
+    insert_license(connection)
+    insert_license(connection, key="lk_" + "b" * 32)
+    connection.executescript((MIGRATIONS_DIR / "0002_admin_console.sql").read_text(encoding="utf-8"))
+    ids = [row[0] for row in connection.execute("SELECT public_id FROM licenses")]
+    assert len(set(ids)) == 2
+    assert all(re.fullmatch(r"lic_[0-9a-f]{16}", public_id) for public_id in ids)
+
+
+def test_audit_log_table_has_designed_columns(db: sqlite3.Connection) -> None:
+    assert columns(db, "console_audit_logs") == [
+        "id",
+        "request_id",
+        "operator_email",
+        "action",
+        "license_key",
+        "before_json",
+        "after_json",
+        "source_ip",
+        "created_at",
+    ]
+
+
+def insert_audit(db: sqlite3.Connection, request_id: str, action: str, license_key: str | None) -> None:
+    db.execute(
+        "INSERT INTO console_audit_logs (request_id, operator_email, action, license_key, created_at) "
+        "VALUES (?, 'ops@example.com', ?, ?, ?)",
+        (request_id, action, license_key, NOW),
+    )
+
+
+def test_audit_request_id_is_unique(db: sqlite3.Connection) -> None:
+    insert_license(db)
+    insert_audit(db, "r1", "suspend", KEY)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_audit(db, "r1", "activate", KEY)
+
+
+@pytest.mark.parametrize(("action", "has_license"), [("sign_in", True), ("suspend", False), ("delete", True)])
+def test_audit_action_and_license_must_be_consistent(db: sqlite3.Connection, action: str, has_license: bool) -> None:
+    insert_license(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_audit(db, "r1", action, KEY if has_license else None)
+
+
+def test_audit_accepts_sign_in_without_license(db: sqlite3.Connection) -> None:
+    insert_audit(db, "r1", "sign_in", None)
+
+
+def test_audit_requires_existing_license(db: sqlite3.Connection) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_audit(db, "r1", "suspend", KEY)
 
 
 def test_usage_logs_table_has_only_key_and_timestamp(db: sqlite3.Connection) -> None:

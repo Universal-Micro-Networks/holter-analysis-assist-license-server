@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}{% endblock %} | ライセンス管理</title>
+  <link rel="icon" href="/console/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/console/assets/vendor/bootstrap/bootstrap.min.css">
+  <link rel="stylesheet" href="/console/assets/console.css">
+  <script src="/console/assets/vendor/bootstrap/bootstrap.bundle.min.js" defer></script>
+  <script src="/console/assets/console.js" defer></script>
+</head>
+<body class="bg-body-tertiary">
+  <nav class="navbar bg-white border-bottom sticky-top">
+    <div class="container console-container">
+      <a class="navbar-brand d-flex align-items-center gap-2 fw-semibold" href="/console/licenses">
+        <img src="/console/assets/favicon.svg" alt="" width="26" height="26">
+        ライセンス管理
+      </a>
+      {% if operator %}
+      <button class="navbar-toggler border-0" type="button" data-bs-toggle="offcanvas" data-bs-target="#console-menu"
+              aria-controls="console-menu" aria-label="メニューを開く">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="offcanvas offcanvas-end" tabindex="-1" id="console-menu" aria-labelledby="console-menu-label">
+        <div class="offcanvas-header border-bottom">
+          <p class="offcanvas-title fw-semibold mb-0" id="console-menu-label">メニュー</p>
+          <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="閉じる"></button>
+        </div>
+        <div class="offcanvas-body d-flex flex-column">
+          <div class="list-group list-group-flush">
+            <a class="list-group-item list-group-item-action py-3" href="{{ url_for('console.licenses') }}">ライセンス一覧</a>
+            <a class="list-group-item list-group-item-action py-3" href="{{ url_for('console.new_license') }}">新しいライセンスを発行する</a>
+          </div>
+          <div class="mt-auto pt-3 border-top">
+            <div class="small text-body-secondary">サインイン中</div>
+            <div class="operator text-truncate mb-3">{{ operator.email }}</div>
+            <form method="post" action="{{ url_for('console.sign_out') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-outline-secondary w-100">サインアウト</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </nav>
+  <main class="container console-container py-4">
+    <h1 class="visually-hidden">{{ self.title() }}</h1>
+    {% for message in flashes %}
+    <div class="alert alert-success" role="status">{{ message }}</div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

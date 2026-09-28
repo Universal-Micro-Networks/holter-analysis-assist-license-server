@@ -40,6 +40,12 @@ def test_wrangler_enables_workers_logs(wrangler: dict) -> None:
     assert wrangler["observability"]["enabled"] is True
 
 
+def test_wrangler_serves_console_assets_from_public(wrangler: dict) -> None:
+    assert wrangler["assets"]["directory"] == "public"
+    assert (ROOT / "public" / "console" / "assets" / "console.css").is_file()
+    assert (ROOT / "public" / "console" / "assets" / "console.js").is_file()
+
+
 def test_wrangler_disables_public_workers_dev_urls(wrangler: dict) -> None:
     assert wrangler["workers_dev"] is False
     assert wrangler["preview_urls"] is False
@@ -70,3 +76,19 @@ def test_lock_files_and_secret_template_are_tracked(path: str) -> None:
 def test_secret_template_declares_admin_token() -> None:
     template = (ROOT / ".dev.vars.example").read_text(encoding="utf-8")
     assert re.search(r"^ADMIN_API_TOKEN=", template, flags=re.MULTILINE)
+
+
+def test_secret_template_declares_console_session_secret_and_dev_operator() -> None:
+    template = (ROOT / ".dev.vars.example").read_text(encoding="utf-8")
+    assert re.search(r"^CONSOLE_SESSION_SECRET=\S{32,}$", template, flags=re.MULTILINE)
+    assert re.search(r"^CONSOLE_DEV_OPERATOR_EMAIL=\S+@\S+$", template, flags=re.MULTILINE)
+
+
+def test_wrangler_declares_access_vars_without_values(wrangler: dict) -> None:
+    # Fail closed until the Access application exists; real values are set per deployment.
+    assert wrangler["vars"] == {"ACCESS_TEAM_DOMAIN": "", "ACCESS_AUD": ""}
+
+
+def test_production_config_never_contains_dev_operator_or_session_secret_value(wrangler: dict) -> None:
+    assert "CONSOLE_DEV_OPERATOR_EMAIL" not in (ROOT / "wrangler.jsonc").read_text(encoding="utf-8")
+    assert "CONSOLE_SESSION_SECRET" not in wrangler["vars"]

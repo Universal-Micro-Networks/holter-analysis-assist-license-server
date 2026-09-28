@@ -22,7 +22,7 @@ def logged(repo: SqliteRepository, clock: FixedClock, key: str) -> int:
     return repo.count_in_period(key, month_period(clock()))
 
 
-@pytest.mark.parametrize("limit", [0, 1, 5])
+@pytest.mark.parametrize("limit", [1, 5])
 def test_limit_n_allows_exactly_n_records(
     client: FlaskClient, issue: Callable[[int], str], repo: SqliteRepository, clock: FixedClock, limit: int
 ) -> None:
@@ -30,6 +30,20 @@ def test_limit_n_allows_exactly_n_records(
     assert [record(client, key) for _ in range(limit)] == [(201, None)] * limit
     assert record(client, key) == (403, "monthly_limit_reached")
     assert logged(repo, clock, key) == limit
+
+
+def test_limit_zero_is_unlimited_and_reports_no_remaining(
+    client: FlaskClient, issue: Callable[[int], str], repo: SqliteRepository, clock: FixedClock
+) -> None:
+    key = issue(0)
+    responses = [client.post("/v1/usage", headers=bearer(key)) for _ in range(3)]
+    assert [r.status_code for r in responses] == [201] * 3
+    assert {k: responses[-1].get_json()["data"][k] for k in ("used", "monthly_limit", "remaining")} == {
+        "used": 3,
+        "monthly_limit": 0,
+        "remaining": None,
+    }
+    assert logged(repo, clock, key) == 3
 
 
 def test_suspend_reject_activate_keeps_history(
@@ -51,8 +65,10 @@ def test_limit_change_applies_to_the_next_decision(client: FlaskClient, issue: C
     assert record(client, key) == (403, "monthly_limit_reached")
     client.post("/v1/admin/licenses/update-limit", json={"license_key": key, "monthly_limit": 2}, headers=ADMIN)
     assert record(client, key) == (201, None)
-    client.post("/v1/admin/licenses/update-limit", json={"license_key": key, "monthly_limit": 0}, headers=ADMIN)
+    client.post("/v1/admin/licenses/update-limit", json={"license_key": key, "monthly_limit": 1}, headers=ADMIN)
     assert record(client, key) == (403, "monthly_limit_reached")
+    client.post("/v1/admin/licenses/update-limit", json={"license_key": key, "monthly_limit": 0}, headers=ADMIN)
+    assert record(client, key) == (201, None)
 
 
 def test_new_month_resets_the_count(client: FlaskClient, issue: Callable[[int], str], clock: FixedClock) -> None:
@@ -85,8 +101,9 @@ def test_storage_outage_denies_usage_without_leaking_details(
 def test_every_error_kind_is_distinct_and_uses_the_common_envelope(
     client: FlaskClient, issue: Callable[[int], str], repo: SqliteRepository, limiter: CountingLimiter
 ) -> None:
-    suspended, exhausted = issue(5), issue(0)
+    suspended, exhausted = issue(5), issue(1)
     client.post("/v1/admin/licenses/suspend", json={"license_key": suspended}, headers=ADMIN)
+    assert record(client, exhausted) == (201, None)
 
     def outage():
         repo.unavailable = True

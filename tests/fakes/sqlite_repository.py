@@ -4,9 +4,23 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
 
-from license_server.domain.types import License, LicenseStatus, Period, UsageLogEntry
+from license_server.domain.types import (
+    AuditContext,
+    AuditEntry,
+    License,
+    LicenseListItem,
+    LicenseSearch,
+    LicenseStatus,
+    Period,
+    UsageLogEntry,
+)
 from license_server.repository import sql
-from license_server.repository.base import DuplicateLicenseKey, InsertResult, RepositoryUnavailable
+from license_server.repository.base import (
+    DuplicateLicenseKey,
+    DuplicateSubmission,
+    InsertResult,
+    RepositoryUnavailable,
+)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
@@ -87,3 +101,84 @@ class SqliteRepository:
     ) -> list[UsageLogEntry]:
         rows = self._db.execute(sql.LIST_IN_RANGE, (license_key, start_utc, end_utc, after_id or 0, limit)).fetchall()
         return [sql.usage_entry_from_row(row) for row in rows]
+
+    @_guard
+    def search(self, criteria: LicenseSearch, period: Period, limit: int, offset: int) -> list[LicenseListItem]:
+        statement = sql.search_licenses(criteria.sort, criteria.order)
+        rows = self._db.execute(statement, sql.search_params(criteria, period, limit, offset)).fetchall()
+        return [sql.list_item_from_row(row) for row in rows]
+
+    @_guard
+    def count_matching(self, criteria: LicenseSearch) -> int:
+        return int(self._db.execute(sql.COUNT_LICENSES, sql.filter_params(criteria)).fetchone()["total"])
+
+    @_guard
+    def find_by_public_id(self, public_id: str) -> License | None:
+        row = self._db.execute(sql.SELECT_LICENSE_BY_PUBLIC_ID, (public_id,)).fetchone()
+        return sql.license_from_row(row) if row else None
+
+    @_guard
+    def find_license_by_request_id(self, request_id: str) -> License | None:
+        row = self._db.execute(sql.SELECT_LICENSE_BY_REQUEST_ID, (request_id,)).fetchone()
+        return sql.license_from_row(row) if row else None
+
+    @_guard
+    def create_audited(self, license_key: str, monthly_limit: int, memo: str, ctx: AuditContext) -> License:
+        row = self._batch(sql.create_audited(license_key, monthly_limit, memo, ctx), ctx, first_row=True)
+        return sql.license_from_row(row)  # type: ignore[arg-type]
+
+    @_guard
+    def update_limit_audited(self, license_key: str, monthly_limit: int, ctx: AuditContext) -> License | None:
+        return self._license_or_none(self._batch(sql.update_limit_audited(license_key, monthly_limit, ctx), ctx))
+
+    @_guard
+    def set_status_audited(self, license_key: str, status: LicenseStatus, ctx: AuditContext) -> License | None:
+        return self._license_or_none(self._batch(sql.set_status_audited(license_key, status, ctx), ctx))
+
+    @_guard
+    def update_memo_audited(self, license_key: str, memo: str, ctx: AuditContext) -> License | None:
+        return self._license_or_none(self._batch(sql.update_memo_audited(license_key, memo, ctx), ctx))
+
+    @_guard
+    def record_sign_in(self, ctx: AuditContext) -> None:
+        self._batch(sql.record_sign_in(ctx), ctx)
+
+    @_guard
+    def list_audits(self, license_key: str, limit: int) -> list[AuditEntry]:
+        rows = self._db.execute(sql.LIST_AUDITS, (license_key, limit)).fetchall()
+        return [sql.audit_from_row(row) for row in rows]
+
+    def count_audits(self, action: str) -> int:
+        row = self._db.execute("SELECT COUNT(*) AS n FROM console_audit_logs WHERE action = ?", (action,)).fetchone()
+        return int(row["n"])
+
+    def count_licenses(self) -> int:
+        return int(self._db.execute("SELECT COUNT(*) AS n FROM licenses").fetchone()["n"])
+
+    def audit_source_ips(self, license_key: str) -> list[str | None]:
+        rows = self._db.execute(
+            "SELECT source_ip FROM console_audit_logs WHERE license_key = ? ORDER BY id", (license_key,)
+        ).fetchall()
+        return [row["source_ip"] for row in rows]
+
+    def _batch(self, statements: list[sql.Statement], ctx: AuditContext, first_row: bool = False) -> Any:
+        """Run statements in one transaction like D1 `batch()`; return the first row of the first or last statement."""
+        self._db.execute("BEGIN")
+        try:
+            rows = [self._db.execute(query, params).fetchone() for query, params in statements]
+            self._db.execute("COMMIT")
+        except sqlite3.IntegrityError as error:
+            self._db.execute("ROLLBACK")
+            if sql.is_duplicate_request(error):
+                raise DuplicateSubmission(ctx.request_id) from error
+            if sql.is_unique_violation(error):
+                raise DuplicateLicenseKey("duplicate license key or public id") from error
+            raise
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
+        return rows[0] if first_row else rows[-1]
+
+    @staticmethod
+    def _license_or_none(row: Any) -> License | None:
+        return sql.license_from_row(row) if row else None

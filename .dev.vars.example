@@ -1,2 +1,9 @@
 # Copy to .dev.vars for local development. Production uses `wrangler secret put ADMIN_API_TOKEN`.
 ADMIN_API_TOKEN=change-me-local-admin-token
+
+# Signs the admin console session cookie. Production: `wrangler secret put CONSOLE_SESSION_SECRET` with a random value.
+CONSOLE_SESSION_SECRET=change-me-local-console-session-secret-0123456789
+
+# Local only: signs in to /console as this operator without Cloudflare Access.
+# Ignored when ACCESS_AUD is set or the host is not loopback. Never set it in production.
+CONSOLE_DEV_OPERATOR_EMAIL=dev-operator@example.com

@@ -1,0 +1,95 @@
+{% extends "console/base.html" %}
+{% from "console/_macros.html" import status_badge, licensee %}
+{% block title %}ライセンス一覧{% endblock %}
+
+{% macro sort_header(label, column, current_sort, current_order) -%}
+{% set active = current_sort == column %}
+{% set next_order = "asc" if active and current_order == "desc" else "desc" %}
+<th class="text-end"{% if active %} aria-sort="{{ 'ascending' if current_order == 'asc' else 'descending' }}"{% endif %}>
+  <a class="sort-link{% if active %} active{% endif %}" href="{{ url_for('console.licenses', sort=column, order=next_order) }}">{{ label }}<span class="sort-indicator" aria-hidden="true">{% if active %}{{ "▲" if current_order == "asc" else "▼" }}{% else %}↕{% endif %}</span></a>
+</th>
+{%- endmacro %}
+
+{% block content %}
+<form class="card card-body shadow-sm border-0 mb-4" method="post" action="{{ url_for('console.search') }}" role="search" data-auto-submit>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <input type="hidden" name="order" value="{{ order }}">
+  <div class="row g-3 align-items-end">
+    <div class="col-md">
+      <label class="form-label small text-body-secondary" for="q">ライセンシーまたはライセンスキーの一部</label>
+      <input type="text" class="form-control{% if errors.q %} is-invalid{% endif %}" id="q" name="q" value="{{ query }}" maxlength="100">
+      {% if errors.q %}<div class="invalid-feedback">{{ errors.q }}</div>{% endif %}
+    </div>
+    <div class="col-md-3">
+      <label class="form-label small text-body-secondary" for="status">状態</label>
+      <select class="form-select{% if errors.status %} is-invalid{% endif %}" id="status" name="status">
+        <option value=""{% if not status_filter %} selected{% endif %}>すべて</option>
+        <option value="active"{% if status_filter == "active" %} selected{% endif %}>有効</option>
+        <option value="suspended"{% if status_filter == "suspended" %} selected{% endif %}>停止中</option>
+      </select>
+      {% if errors.status %}<div class="invalid-feedback">{{ errors.status }}</div>{% endif %}
+    </div>
+  </div>
+  <div class="form-text">入力欄で Enter キーを押すか状態を選ぶと検索します。空のまま Enter キーを押すと、すべてのライセンスを表示します。</div>
+</form>
+
+{% if page.items %}
+<div class="card shadow-sm border-0">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>ライセンシー</th>
+          <th>状態</th>
+          {{ sort_header("当月の利用回数", "used", sort, order) }}
+          {{ sort_header("発行日時", "created_at", sort, order) }}
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in page.items %}
+        <tr>
+          <td><a class="fw-semibold text-decoration-none" href="{{ url_for('console.license_detail', public_id=item.license.public_id) }}">{{ licensee(item.license) }}</a></td>
+          <td>{{ status_badge(item.license) }}</td>
+          <td class="text-end font-tabular">{{ item.used_this_month | number }}</td>
+          <td class="text-end text-body-secondary small font-tabular">{{ item.license.created_at | jst }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<nav class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-3" aria-label="ページ">
+  <span class="small text-body-secondary">全 {{ page.total | number }} 件中 {{ page.first_number | number }}〜{{ page.last_number | number }} 件</span>
+  {% if page.page_count > 1 %}
+  <ul class="pagination pagination-sm mb-0">
+    {% if page.page > 1 %}
+    <li class="page-item"><a class="page-link" href="{{ url_for('console.licenses', page=page.page - 1, **sort_args) }}">前へ</a></li>
+    {% else %}
+    <li class="page-item disabled">
+      <span class="page-link">前へ</span></li>
+    {% endif %}
+    {% for number in pages %}
+    {% if number is none %}
+    <li class="page-item disabled"><span class="page-link">…</span></li>
+    {% elif number == page.page %}
+    <li class="page-item active" aria-current="page">
+      <span class="page-link">{{ number }}</span></li>
+    {% else %}
+    <li class="page-item"><a class="page-link" href="{{ url_for('console.licenses', page=number, **sort_args) }}">{{ number }}</a></li>
+    {% endif %}
+    {% endfor %}
+    {% if page.has_next %}
+    <li class="page-item"><a class="page-link" href="{{ url_for('console.licenses', page=page.page + 1, **sort_args) }}">次へ</a></li>
+    {% else %}
+    <li class="page-item disabled">
+      <span class="page-link">次へ</span></li>
+    {% endif %}
+  </ul>
+  {% endif %}
+</nav>
+{% else %}
+<div class="card card-body shadow-sm border-0 text-body-secondary">該当するライセンスはありません。</div>
+{% endif %}
+{% endblock %}

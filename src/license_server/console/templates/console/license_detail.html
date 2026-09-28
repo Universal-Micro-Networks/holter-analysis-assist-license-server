@@ -1,0 +1,118 @@
+{% extends "console/base.html" %}
+{% from "console/_macros.html" import status_badge, licensee, field_error %}
+{% block title %}ライセンスの詳細{% endblock %}
+{% block content %}
+{% set summary = detail.summary %}
+<nav aria-label="パンくずリスト">
+  <ol class="breadcrumb small mb-3">
+    <li class="breadcrumb-item"><a href="{{ url_for('console.licenses') }}">ライセンス一覧</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ licensee(license) }}</li>
+  </ol>
+</nav>
+{% if errors %}<div class="alert alert-danger" role="alert">入力内容に誤りがあります。各項目のメッセージを確認してください。</div>{% endif %}
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-7">
+    <section class="card shadow-sm border-0 h-100">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+        <span class="fw-semibold">ライセンス情報</span>
+        {{ status_badge(license) }}
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0">
+          <dt class="col-sm-4 text-body-secondary fw-normal">ライセンスキー</dt>
+          <dd class="col-sm-8">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <code id="license-key" class="key">{{ license.license_key }}</code>
+              <button type="button" class="btn btn-outline-primary btn-sm" data-copy-target="license-key">コピー</button>
+            </div>
+          </dd>
+          <dt class="col-sm-4 text-body-secondary fw-normal">ライセンシー</dt><dd class="col-sm-8">{{ license.memo or "（未設定）" }}</dd>
+          <dt class="col-sm-4 text-body-secondary fw-normal">状態</dt><dd class="col-sm-8">{{ license.status | status_label }}</dd>
+          <dt class="col-sm-4 text-body-secondary fw-normal">発行日時</dt><dd class="col-sm-8">{{ license.created_at | jst }}</dd>
+          <dt class="col-sm-4 text-body-secondary fw-normal">最終更新日時</dt><dd class="col-sm-8 mb-0">{{ license.updated_at | jst }}</dd>
+        </dl>
+      </div>
+    </section>
+  </div>
+
+  <div class="col-lg-5">
+    <section class="card shadow-sm border-0 h-100">
+      <div class="card-header bg-white fw-semibold py-3">利用状況（{{ selected_month }}）</div>
+      <div class="card-body">
+        <form method="get" action="{{ url_for('console.license_detail', public_id=license.public_id) }}" class="d-flex gap-2 mb-3">
+          <label class="visually-hidden" for="month">対象月</label>
+          <input type="month" class="form-control{% if errors.month %} is-invalid{% endif %}" id="month" name="month" value="{{ selected_month }}">
+          <button type="submit" class="btn btn-outline-secondary text-nowrap">表示</button>
+        </form>
+        {{ field_error(errors.month) }}
+        <div class="stat text-center mb-3"><div class="stat-value">{{ summary.used | number }} 回</div><div class="stat-label">利用回数</div></div>
+        <a class="btn btn-link px-0" href="{{ url_for('console.usage_logs', public_id=license.public_id) }}">利用履歴を見る</a>
+      </div>
+    </section>
+  </div>
+</div>
+
+<section class="card shadow-sm border-0 mb-4">
+  <div class="card-header bg-white fw-semibold py-3">変更</div>
+  <div class="card-body">
+    <div class="row g-4">
+      <div class="col-md-8">
+        <form method="post" action="{{ url_for('console.update_memo', public_id=license.public_id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="request_id" value="{{ new_request_id() }}">
+          <label class="form-label" for="new_memo">ライセンシー</label>
+          <div class="input-group">
+            <input type="text" class="form-control{% if errors.memo %} is-invalid{% endif %}" id="new_memo" name="memo" maxlength="200" value="{{ values.get('memo', license.memo) }}">
+            <button type="submit" class="btn btn-primary">ライセンシーを保存する</button>
+          </div>
+          <div class="form-text">200 文字以内</div>
+          {{ field_error(errors.memo) }}
+        </form>
+      </div>
+    </div>
+    <hr class="my-4">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+      {% if license.status.value == "active" %}
+      <span class="small text-body-secondary">停止すると、このライセンスでの利用記録と検証ができなくなります。</span>
+      <form method="post" action="{{ url_for('console.suspend', public_id=license.public_id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="request_id" value="{{ new_request_id() }}">
+        <button type="submit" class="btn btn-outline-danger">停止する</button>
+      </form>
+      {% else %}
+      <span class="small text-body-secondary">このライセンスは停止中です。</span>
+      <form method="post" action="{{ url_for('console.activate', public_id=license.public_id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="request_id" value="{{ new_request_id() }}">
+        <button type="submit" class="btn btn-success">再開する</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="card shadow-sm border-0">
+  <div class="card-header bg-white fw-semibold py-3">操作の記録</div>
+  {% if detail.audits %}
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0 small">
+      <thead class="table-light"><tr><th>日時</th><th>運営者</th><th>操作</th><th>変更前</th><th>変更後</th></tr></thead>
+      <tbody>
+        {% for entry in detail.audits %}
+        <tr>
+          <td class="text-nowrap">{{ entry.created_at | jst }}</td>
+          <td>{{ entry.operator_email }}</td>
+          <td>{{ entry.action | action_label }}</td>
+          <td>{{ entry.before | audit_values }}</td>
+          <td>{{ entry.after | audit_values }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-body-secondary">管理画面からの操作の記録はありません。</div>
+  {% endif %}
+</section>
+{% endblock %}
