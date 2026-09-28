@@ -1,0 +1,41 @@
+name: holter-license-server
+
+x-dev-image: &dev-image
+  build: .
+  image: holter-license-server-dev
+
+services:
+  app:
+    <<: *dev-image
+    command: ["docker/dev-entrypoint.sh"]
+    ports:
+      - "8787:8787"
+    volumes:
+      - .:/app
+      # Platform-specific generated files stay in named volumes so the host checkout is not polluted.
+      # python_modules (platform-neutral Pyodide packages, gitignored) must stay in the bind mount:
+      # pywrangler replaces it with rmtree, which fails on a mount point.
+      - wrangler-state:/app/.wrangler
+      - venv-workers:/app/.venv-workers
+      - node-modules:/app/node_modules
+      - uv-cache:/root/.cache/uv
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8787/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  test:
+    <<: *dev-image
+    profiles: ["test"]
+    command: ["uv", "run", "pytest"]
+    volumes:
+      - .:/app
+      - uv-cache:/root/.cache/uv
+
+volumes:
+  wrangler-state:
+  venv-workers:
+  node-modules:
+  uv-cache:
