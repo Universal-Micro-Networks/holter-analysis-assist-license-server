@@ -35,7 +35,7 @@ def workers_console_dependencies() -> ConsoleDependencies:
     settings = console_settings_from_environ(request.environ)
     repository = D1Repository(bindings.db)
     return ConsoleDependencies(
-        console=ConsoleService(repository, repository, UsageService(repository, repository, _utc_now), _utc_now),
+        console=ConsoleService(repository, UsageService(repository, repository, _utc_now), _utc_now),
         verifier=_verifier(settings),
         dev_operator=_dev_operator(settings),
         session_secret=settings.session_secret,

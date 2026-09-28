@@ -48,7 +48,7 @@ def setup(fetcher: FakeCertsFetcher, clock: FixedClock) -> ConsoleSetup:
 
 @pytest.fixture
 def console_service(repo: SqliteRepository, clock: FixedClock) -> ConsoleService:
-    return ConsoleService(repo, repo, UsageService(repo, repo, clock), clock)
+    return ConsoleService(repo, UsageService(repo, repo, clock), clock)
 
 
 @pytest.fixture

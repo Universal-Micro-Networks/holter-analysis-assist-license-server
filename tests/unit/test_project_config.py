@@ -46,6 +46,19 @@ def test_wrangler_serves_console_assets_from_public(wrangler: dict) -> None:
     assert (ROOT / "public" / "console" / "assets" / "console.js").is_file()
 
 
+def test_console_assets_get_security_headers_from_headers_file() -> None:
+    lines = (ROOT / "public" / "_headers").read_text(encoding="utf-8").splitlines()
+    rules = [line for line in lines if line and not line.startswith("#")]
+    assert rules[0] == "/console/assets/*"
+    headers = dict(line.strip().split(": ", 1) for line in rules[1:])
+    assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    assert "script-src" not in headers["Content-Security-Policy"]
+    assert headers["X-Frame-Options"] == "DENY"
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert headers["Referrer-Policy"] == "same-origin"
+    assert headers["Strict-Transport-Security"] == "max-age=31536000"
+
+
 def test_wrangler_disables_public_workers_dev_urls(wrangler: dict) -> None:
     assert wrangler["workers_dev"] is False
     assert wrangler["preview_urls"] is False

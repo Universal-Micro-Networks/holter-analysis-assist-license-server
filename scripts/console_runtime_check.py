@@ -1,5 +1,5 @@
 """Runtime checks for the admin console on the docker compose dev server:
-security headers on every console response, /v1 behavior for console-issued (unlimited) and limited licenses, and double
+security headers on every console response and static asset, /v1 behavior for console-issued (unlimited) and limited licenses, and double
 submissions (resent and concurrent) changing data only once.
 
 Requires CONSOLE_SESSION_SECRET and CONSOLE_DEV_OPERATOR_EMAIL in .dev.vars and no Access settings.
@@ -42,15 +42,20 @@ def keeps_keys_out_of_urls(page: Page) -> bool:
     return not any(KEY_PATTERN.search(url) for url in urls)
 
 
-def api(method: str, path: str, key: str | None = None) -> tuple[int, dict[str, str], dict[str, object]]:
+def raw(method: str, path: str, key: str | None = None) -> tuple[int, dict[str, str], bytes]:
     parts = urlsplit(BASE_URL)
     connection = http.client.HTTPConnection(parts.hostname or "localhost", parts.port or 80, timeout=30)
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     connection.request(method, path, headers=headers)
     response = connection.getresponse()
-    result = response.status, {k.lower(): v for k, v in response.getheaders()}, json.loads(response.read() or b"{}")
+    result = response.status, {k.lower(): v for k, v in response.getheaders()}, response.read()
     connection.close()
     return result
+
+
+def api(method: str, path: str, key: str | None = None) -> tuple[int, dict[str, str], dict[str, object]]:
+    status, headers, body = raw(method, path, key)
+    return status, headers, json.loads(body or b"{}")
 
 
 def issue(browser: ConsoleBrowser, csrf: str, memo: str, limit: int | None = None) -> str:
@@ -96,6 +101,17 @@ def check_security_headers(browser: ConsoleBrowser, csrf: str) -> None:
     check(pages["unknown license"].status == 404, "unknown license shows not found")
     after = browser.get(detail)
     check(audit_rows(after, "ライセンシーの変更") == 0 and "停止中" not in after.body, "rejected posts changed nothing")
+
+
+def check_asset_headers() -> None:
+    for path in ["/console/assets/console.css", "/console/assets/console.js", "/console/assets/favicon.svg"]:
+        status, headers, _ = raw("GET", path)
+        check(status == 200 and "frame-ancestors 'none'" in headers.get("content-security-policy", "")
+              and headers.get("x-content-type-options") == "nosniff" and headers.get("x-frame-options") == "DENY"
+              and headers.get("referrer-policy") == "same-origin",
+              f"static asset {path} has security headers from public/_headers")
+    status, _, _ = raw("GET", "/_headers")
+    check(status == 404, "public/_headers itself is not served")
 
 
 def check_api(browser: ConsoleBrowser, csrf: str) -> None:
@@ -161,6 +177,7 @@ def main() -> None:
     browser.get("/console/licenses")
     csrf = browser.csrf()
     check_security_headers(browser, csrf)
+    check_asset_headers()
     check_api(browser, csrf)
     check_double_submission(browser, csrf)
     browser.post("/console/sign-out", {}, csrf)

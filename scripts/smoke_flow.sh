@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 # End-to-end check against a running dev server (`docker compose up`):
-# issue -> verify -> record -> current -> suspend -> rejected -> activate -> record.
+# issue -> verify -> record -> current -> suspend -> rejected -> activate -> record -> limit reached -> logs.
+# Response bodies are printed with license keys redacted.
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8787}"
 ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-$(sed -n 's/^ADMIN_API_TOKEN=//p' .dev.vars)}"
 
+BODY=$(mktemp)
+trap 'rm -f "$BODY"' EXIT
+
+redacted_body() {
+  sed -E 's/lk_[0-9a-f]{32}/lk_<redacted>/g' "$BODY"
+}
+
 step() {
   local name="$1" expected="$2"
   shift 2
   local status
-  status=$(curl -sS -o /tmp/smoke_body.json -w '%{http_code}' "$@")
+  status=$(curl -sS -o "$BODY" -w '%{http_code}' "$@")
   if [[ "$status" != "$expected" ]]; then
-    echo "FAIL $name: expected $expected, got $status: $(cat /tmp/smoke_body.json)" >&2
+    echo "FAIL $name: expected $expected, got $status: $(redacted_body)" >&2
     exit 1
   fi
-  echo "ok   $name ($status) $(cat /tmp/smoke_body.json)"
+  echo "ok   $name ($status) $(redacted_body)"
 }
 
 admin() {
@@ -24,7 +32,7 @@ admin() {
 
 admin licenses '{"monthly_limit": 2}'
 step "issue license" 201 "${curl_args[@]}"
-KEY=$(python3 -c 'import json; print(json.load(open("/tmp/smoke_body.json"))["data"]["license_key"])')
+KEY=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["data"]["license_key"])' "$BODY")
 CLIENT=(-H "Authorization: Bearer $KEY")
 
 step "verify" 200 -X POST "$BASE_URL/v1/licenses/verify" "${CLIENT[@]}"

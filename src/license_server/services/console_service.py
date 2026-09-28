@@ -21,7 +21,6 @@ from license_server.domain.types import (
 from license_server.repository.base import (
     ConsoleRepository,
     DuplicateLicenseKey,
-    LicenseRepository,
     RepositoryUnavailable,
 )
 from license_server.services.common import Clock, ensure_exists
@@ -97,13 +96,11 @@ class ConsoleService:
     def __init__(
         self,
         repo: ConsoleRepository,
-        licenses: LicenseRepository,
         usage: UsageService,
         clock: Clock,
         key_generator: Callable[[], str] = generate_license_key,
     ) -> None:
         self._repo = repo
-        self._licenses = licenses
         self._usage = usage
         self._clock = clock
         self._key_generator = key_generator

@@ -37,7 +37,7 @@ def sequential_keys() -> Iterator[str]:
 @pytest.fixture
 def service(repo: SqliteRepository, clock: FixedClock) -> ConsoleService:
     keys = sequential_keys()
-    return ConsoleService(repo, repo, UsageService(repo, repo, clock), clock, key_generator=lambda: next(keys))
+    return ConsoleService(repo, UsageService(repo, repo, clock), clock, key_generator=lambda: next(keys))
 
 
 def ctx(service: ConsoleService, request_id: str | None = None) -> AuditContext:
@@ -63,12 +63,12 @@ class TestIssue:
 
     def test_regenerates_key_on_collision(self, repo: SqliteRepository, clock: FixedClock) -> None:
         keys = iter(["lk_" + "a" * 32, "lk_" + "a" * 32, "lk_" + "b" * 32])
-        service = ConsoleService(repo, repo, UsageService(repo, repo, clock), clock, key_generator=lambda: next(keys))
+        service = ConsoleService(repo, UsageService(repo, repo, clock), clock, key_generator=lambda: next(keys))
         service.issue(1, "", ctx(service))
         assert service.issue(1, "", ctx(service)).license_key == "lk_" + "b" * 32
 
     def test_gives_up_after_three_collisions(self, repo: SqliteRepository, clock: FixedClock) -> None:
-        service = ConsoleService(repo, repo, UsageService(repo, repo, clock), clock, key_generator=lambda: "lk_" + "a" * 32)
+        service = ConsoleService(repo, UsageService(repo, repo, clock), clock, key_generator=lambda: "lk_" + "a" * 32)
         service.issue(1, "", ctx(service))
         with pytest.raises(RepositoryUnavailable):
             service.issue(1, "", ctx(service))
