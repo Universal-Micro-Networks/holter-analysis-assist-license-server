@@ -1,0 +1,16 @@
+{
+  "name": "holter-analysis-assist-license-server",
+  "private": true,
+  "description": "Pins the wrangler version used by pywrangler (npx wrangler).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Universal-Micro-Networks/holter-analysis-assist-license-server.git"
+  },
+  "devDependencies": {
+    "wrangler": "4.142.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260926.1": true
+  }
+}

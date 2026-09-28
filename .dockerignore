@@ -1,0 +1,12 @@
+.git
+.venv
+.venv-workers
+python_modules
+node_modules
+.wrangler
+.dev.vars
+pylock.toml
+__pycache__
+.pytest_cache
+.mypy_cache
+.cursor

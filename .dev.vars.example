@@ -1,0 +1,2 @@
+# Copy to .dev.vars for local development. Production uses `wrangler secret put ADMIN_API_TOKEN`.
+ADMIN_API_TOKEN=change-me-local-admin-token
